@@ -1,5 +1,5 @@
 {
-  "name": "@aixine/dsh-side-chat",
+  "name": "@aixineiar/dsh-side-chat",
   "version": "1.0.0",
   "type": "module",
   "description": "Temporary side conversation in the right sidebar with three modes (reply only / read-only / fully inherited), rendering the same chat UI as the main conversation.",

@@ -68,23 +68,23 @@ Requirements: DSH **0.2.2-rc.1**, Node ≥ 20, pnpm, and the main session **runn
 
 **A. By name (recommended)**
 
-Package name: **`@aixine/dsh-side-chat`**. In the DSH sidebar's *Plugins* page, choose *Add plugin* and type that name — pnpm resolves it from the npm registry, and because the package declares `dsh.bundle`, it is appended to the profile's `dsh.profile.bundles` automatically.
+Package name: **`@aixineiar/dsh-side-chat`**. In the DSH sidebar's *Plugins* page, choose *Add plugin* and type that name — pnpm resolves it from the npm registry, and because the package declares `dsh.bundle`, it is appended to the profile's `dsh.profile.bundles` automatically.
 
 ```bash
 # equivalent command line, inside the profile directory
 cd <DSH_HOME>/profiles/<profile>          # Windows default: %USERPROFILE%\.dsh\profiles\desktop
-pnpm add @aixine/dsh-side-chat
+pnpm add @aixineiar/dsh-side-chat
 ```
 
 A command-line install still needs the bundle entry added by hand (after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`):
 
 ```json
 {
-  "dependencies": { "@aixine/dsh-side-chat": "^1.0.0" },
+  "dependencies": { "@aixineiar/dsh-side-chat": "^1.0.0" },
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base",
     "@deepseek-ai/dsh-web-app",
-    "@aixine/dsh-side-chat"
+    "@aixineiar/dsh-side-chat"
   ] } }
 }
 ```
@@ -111,7 +111,7 @@ pnpm add "link:/absolute/path/to/dsh-side-chat"
 ```yaml
 - insert:
     - id: side-chat
-      name: '@aixine/dsh-side-chat'
+      name: '@aixineiar/dsh-side-chat'
 ```
 
 The bundle's own [`cordis.patch.yml`](cordis.patch.yml) already carries that row, so a manager install needs no YAML work.
