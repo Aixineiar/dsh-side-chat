@@ -153,25 +153,25 @@
 
 ### 方式 A：输入名字安装（推荐）
 
-包名：**`dsh-plugin-side-chat`**。在 DSH 侧边栏的 **插件（Plugins）** 页点「添加插件」，输入这个名字即可 —— 底层走 pnpm 从 npm registry 安装，装完会**自动**把 `dsh-plugin-side-chat` 追加到 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle`）。
+包名：**`@aixine/dsh-side-chat`**。在 DSH 侧边栏的 **插件（Plugins）** 页点「添加插件」，输入这个名字即可 —— 底层走 pnpm 从 npm registry 安装，装完会**自动**把 `@aixine/dsh-side-chat` 追加到 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle`）。
 
 ```bash
 # 等价命令行：在 profile 目录里
 cd <DSH_HOME>/profiles/<profile>     # Windows 默认 %USERPROFILE%\.dsh\profiles\desktop
-pnpm add dsh-plugin-side-chat
+pnpm add @aixine/dsh-side-chat
 ```
 
 命令行装完还需要**手动**把包名加进该 profile 的 `package.json` 的 `dsh.profile.bundles`（顺序即补丁优先级，放在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后）：
 
 ```json
 {
-  "dependencies": { "dsh-plugin-side-chat": "^1.0.0" },
+  "dependencies": { "@aixine/dsh-side-chat": "^1.0.0" },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "dsh-plugin-side-chat"
+        "@aixine/dsh-side-chat"
       ]
     }
   }
@@ -189,7 +189,7 @@ cd <DSH_HOME>/profiles/<profile>
 pnpm add "github:Aixineiar/dsh-side-chat"
 ```
 
-同样需要把 `dsh-plugin-side-chat` 加进 `dsh.profile.bundles`（命令行安装时；用插件管理器输入 git 地址会自动加）。
+同样需要把 `@aixine/dsh-side-chat` 加进 `dsh.profile.bundles`（命令行安装时；用插件管理器输入 git 地址会自动加）。
 
 ### 方式 C：本地目录（开发 / 改源码）
 
@@ -199,7 +199,7 @@ cd <DSH_HOME>/profiles/<profile>
 pnpm add "link:/absolute/path/to/dsh-side-chat"
 ```
 
-然后把 `dsh-plugin-side-chat` 加进 `dsh.profile.bundles`。改完源码重启 DSH 即生效（无构建步骤）。
+然后把 `@aixine/dsh-side-chat` 加进 `dsh.profile.bundles`。改完源码重启 DSH 即生效（无构建步骤）。
 
 ### 方式 D：手工改 profile 补丁
 
@@ -208,7 +208,7 @@ pnpm add "link:/absolute/path/to/dsh-side-chat"
 ```yaml
 - insert:
     - id: side-chat
-      name: 'dsh-plugin-side-chat'
+      name: '@aixine/dsh-side-chat'
 ```
 
 这与本插件自带的 [`cordis.patch.yml`](cordis.patch.yml)（bundle 层已经声明了同一行）等价，通常**不需要**你手动加。
@@ -220,13 +220,13 @@ pnpm add "link:/absolute/path/to/dsh-side-chat"
 3. 点开卡片 → 出现右侧页签 `侧边 · <主会话标题>`，顶栏显示「上下文截至 <时间>」。
 4. 发一句话，能收到回答即安装成功。
 
-若卡片不出现：确认 `dsh.profile.bundles` 里有 `dsh-plugin-side-chat`、profile 目录的 `node_modules/dsh-plugin-side-chat` 确实存在（本地目录安装时它是指向仓库的链接）、并且 DSH 已重启。
+若卡片不出现：确认 `dsh.profile.bundles` 里有 `@aixine/dsh-side-chat`、profile 目录的 `node_modules/@aixine/dsh-side-chat` 确实存在（本地目录安装时它是指向仓库的链接）、并且 DSH 已重启。
 
 ### 卸载
 
 ```bash
 cd <DSH_HOME>/profiles/<profile>
-pnpm remove dsh-plugin-side-chat
+pnpm remove @aixine/dsh-side-chat
 ```
 
 并从 `dsh.profile.bundles` 删掉对应行，重启 DSH。已经在侧栏打开过的会话请先手动关掉页签（关闭会删除它的日志与目录）。
