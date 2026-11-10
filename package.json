@@ -1,11 +1,10 @@
 {
-  "name": "@local/dsh-side-chat",
+  "name": "dsh-plugin-side-chat",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "Temporary side conversation in the right sidebar with three modes (reply only / read-only / fully inherited), rendering the same chat UI as the main conversation.",
   "license": "MIT",
-  "author": "dsh-side-chat contributors",
+  "author": "Aixineiar (https://github.com/Aixineiar)",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -24,7 +23,11 @@
     "url": "https://github.com/Aixineiar/dsh-side-chat/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": "^0.2.2-rc.1"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": "./index.js",
@@ -34,7 +37,8 @@
   },
   "scripts": {
     "test": "node dev/boot-sim.mjs",
-    "dev:boot-sim": "node dev/boot-sim.mjs"
+    "dev:boot-sim": "node dev/boot-sim.mjs",
+    "prepublishOnly": "npm test"
   },
   "files": [
     "index.js",

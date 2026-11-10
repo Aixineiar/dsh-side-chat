@@ -66,38 +66,55 @@ A **DSH plugin** (host + client halves), loaded by DSH through a profile bundle.
 
 Requirements: DSH **0.2.2-rc.1**, Node ≥ 20, pnpm, and the main session **running** (open on the left) — the plugin seeds from its latest committed event.
 
-**A. Local directory (recommended)**
+**A. By name (recommended)**
+
+Package name: **`dsh-plugin-side-chat`**. In the DSH sidebar's *Plugins* page, choose *Add plugin* and type that name — pnpm resolves it from the npm registry, and because the package declares `dsh.bundle`, it is appended to the profile's `dsh.profile.bundles` automatically.
 
 ```bash
-git clone <repo-url> dsh-side-chat
+# equivalent command line, inside the profile directory
 cd <DSH_HOME>/profiles/<profile>          # Windows default: %USERPROFILE%\.dsh\profiles\desktop
-pnpm add "link:/absolute/path/to/dsh-side-chat"
+pnpm add dsh-plugin-side-chat
 ```
 
-Then append it to `dsh.profile.bundles` in that profile's `package.json` (after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`):
+A command-line install still needs the bundle entry added by hand (after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`):
 
 ```json
 {
-  "dependencies": { "@local/dsh-side-chat": "link:/absolute/path/to/dsh-side-chat" },
+  "dependencies": { "dsh-plugin-side-chat": "^1.0.0" },
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base",
     "@deepseek-ai/dsh-web-app",
-    "@local/dsh-side-chat"
+    "dsh-plugin-side-chat"
   ] } }
 }
 ```
 
-**B. Plugin manager** — the Web sidebar's *Plugins* page installs external bundles (pnpm under the hood); point it at this directory or a git address, then make sure the bundle is listed in `dsh.profile.bundles`. Command-line equivalent: `pnpm add "github:<owner>/dsh-side-chat"`.
+> Before installing, the plugin manager reads the manifest once: an unmet `engines.dsh` (this package declares `^0.2.2-rc.1`) refuses the install instead of installing and rolling back.
 
-**C. Profile patch only** — mount without adding a dependency (the package must already resolve):
+**B. From GitHub** — works today, without waiting for a publish:
+
+```bash
+cd <DSH_HOME>/profiles/<profile>
+pnpm add "github:Aixineiar/dsh-side-chat"
+```
+
+**C. Local directory** (development / editing the source):
+
+```bash
+git clone https://github.com/Aixineiar/dsh-side-chat.git dsh-side-chat
+cd <DSH_HOME>/profiles/<profile>
+pnpm add "link:/absolute/path/to/dsh-side-chat"
+```
+
+**D. Profile patch only** — mount without adding a dependency (the package must already resolve):
 
 ```yaml
 - insert:
     - id: side-chat
-      name: '@local/dsh-side-chat'
+      name: 'dsh-plugin-side-chat'
 ```
 
-The bundle's own [`cordis.patch.yml`](cordis.patch.yml) already carries that row, so options A and B need no YAML work.
+The bundle's own [`cordis.patch.yml`](cordis.patch.yml) already carries that row, so a manager install needs no YAML work.
 
 **Restart DSH**, open a session that has messages, and look for the「侧边对话」card in the tool panel or the sidebar button in the conversation header. Uninstall with `pnpm remove` plus deleting the `bundles` entry.
 

@@ -151,62 +151,67 @@
 | pnpm | 安装依赖时用得到（DSH 桌面版通常已自带） |
 | 主会话 | 侧边对话需要主会话**正在运行**（左侧已打开该会话），否则打开时会提示「主会话未运行」 |
 
-### 方式 A：本地目录（推荐，开发 / 自用）
+### 方式 A：输入名字安装（推荐）
+
+包名：**`dsh-plugin-side-chat`**。在 DSH 侧边栏的 **插件（Plugins）** 页点「添加插件」，输入这个名字即可 —— 底层走 pnpm 从 npm registry 安装，装完会**自动**把 `dsh-plugin-side-chat` 追加到 profile 的 `dsh.profile.bundles`（因为它声明了 `dsh.bundle`）。
 
 ```bash
-git clone <你的仓库地址> dsh-side-chat
+# 等价命令行：在 profile 目录里
+cd <DSH_HOME>/profiles/<profile>     # Windows 默认 %USERPROFILE%\.dsh\profiles\desktop
+pnpm add dsh-plugin-side-chat
 ```
 
-然后在这个文件的 profile 目录里加依赖（`<DSH_HOME>/profiles/<profile>/`，Windows 默认 `%USERPROFILE%\.dsh\profiles\desktop`）：
-
-```bash
-cd <DSH_HOME>/profiles/<profile>
-pnpm add "link:/absolute/path/to/dsh-side-chat"
-```
-
-再编辑同一个目录下的 **`package.json`**，把包追加到 `dsh.profile.bundles`（顺序即补丁优先级，放在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后）：
+命令行装完还需要**手动**把包名加进该 profile 的 `package.json` 的 `dsh.profile.bundles`（顺序即补丁优先级，放在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后）：
 
 ```json
 {
-  "dependencies": {
-    "@local/dsh-side-chat": "link:D:/agent/dsh-side-chat"
-  },
+  "dependencies": { "dsh-plugin-side-chat": "^1.0.0" },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "@local/dsh-side-chat"
+        "dsh-plugin-side-chat"
       ]
     }
   }
 }
 ```
 
-> 包名保持 `@local/dsh-side-chat` 是为了本地 `link:` 安装；如果你要发布到 npm，把 `package.json` 的 `name` 改成公开名并删掉 `"private": true`，`bundles` 里同步改名即可。
+> 插件管理器在安装**前**会读一次 manifest：`engines.dsh`（本包声明 `^0.2.2-rc.1`）不满足就直接拒装，不会先装坏再回滚。
 
-### 方式 B：插件管理器
+### 方式 B：GitHub 仓库地址
 
-DSH 的 Web 侧边栏有 **插件（Plugins）** 页，可以安装 / 启用外部 bundle（底层走 pnpm）。把本仓库的**目录绝对路径**（或 git 地址）填进去，安装后确认 bundle 出现在 `dsh.profile.bundles` 里即可。
+不想等 npm 发布、或想跟最新提交，可以直接用仓库地址（插件管理器里粘 `Aixineiar/dsh-side-chat` 或下面这条）：
 
 ```bash
-# 等价的命令行做法（git 依赖）
-pnpm add "github:<owner>/dsh-side-chat"
+cd <DSH_HOME>/profiles/<profile>
+pnpm add "github:Aixineiar/dsh-side-chat"
 ```
 
-同样需要把包加进 `dsh.profile.bundles`。
+同样需要把 `dsh-plugin-side-chat` 加进 `dsh.profile.bundles`（命令行安装时；用插件管理器输入 git 地址会自动加）。
 
-### 方式 C：手工改 profile 补丁
+### 方式 C：本地目录（开发 / 改源码）
+
+```bash
+git clone https://github.com/Aixineiar/dsh-side-chat.git dsh-side-chat
+cd <DSH_HOME>/profiles/<profile>
+pnpm add "link:/absolute/path/to/dsh-side-chat"
+```
+
+然后把 `dsh-plugin-side-chat` 加进 `dsh.profile.bundles`。改完源码重启 DSH 即生效（无构建步骤）。
+
+### 方式 D：手工改 profile 补丁
 
 不装依赖、只想在 profile 的 `cordis.patch.yml` 里挂一行（包必须已经能被解析到）：
 
 ```yaml
 - insert:
     - id: side-chat
-      name: '@local/dsh-side-chat'
+      name: 'dsh-plugin-side-chat'
 ```
 
-这与本插件自带的 [`cordis.patch.yml`](cordis.patch.yml)（bundle 层已经声明了同一行）等价，通常**不需要**你手动加 —— 走方式 A/B 就够了。
+这与本插件自带的 [`cordis.patch.yml`](cordis.patch.yml)（bundle 层已经声明了同一行）等价，通常**不需要**你手动加。
 
 ### 安装后校验
 
@@ -215,13 +220,13 @@ pnpm add "github:<owner>/dsh-side-chat"
 3. 点开卡片 → 出现右侧页签 `侧边 · <主会话标题>`，顶栏显示「上下文截至 <时间>」。
 4. 发一句话，能收到回答即安装成功。
 
-若卡片不出现：确认 `dsh.profile.bundles` 里有这一行、profile 目录的 `node_modules/@local/dsh-side-chat` 是指向本仓库的链接、并且 DSH 已重启。
+若卡片不出现：确认 `dsh.profile.bundles` 里有 `dsh-plugin-side-chat`、profile 目录的 `node_modules/dsh-plugin-side-chat` 确实存在（本地目录安装时它是指向仓库的链接）、并且 DSH 已重启。
 
 ### 卸载
 
 ```bash
 cd <DSH_HOME>/profiles/<profile>
-pnpm remove "@local/dsh-side-chat"
+pnpm remove dsh-plugin-side-chat
 ```
 
 并从 `dsh.profile.bundles` 删掉对应行，重启 DSH。已经在侧栏打开过的会话请先手动关掉页签（关闭会删除它的日志与目录）。

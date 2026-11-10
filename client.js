@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-side-chat',
+  id: 'dsh-plugin-side-chat',
   factory(require) {
     const React = require('react');
     const ReactDOM = require('react-dom');
@@ -33,9 +33,9 @@ window.__ModuleLoader__.load({
     /** Resource address prefix for one side-chat Session. */
     const SCHEME = 'dsh-resource://sidechat/session/';
     /** Stable implementation identity of the conversation tab body. */
-    const CHAT_ID = '@local/dsh-side-chat/chat';
+    const CHAT_ID = 'dsh-plugin-side-chat/chat';
     /** Stable implementation identity of the launcher page body. */
-    const LAUNCHER_ID = '@local/dsh-side-chat/launcher';
+    const LAUNCHER_ID = 'dsh-plugin-side-chat/launcher';
     /** Tab kind of the conversation body. */
     const CHAT_KIND = 'sidechat';
     /** Tab kind of the launcher page. */
@@ -617,7 +617,7 @@ window.__ModuleLoader__.load({
 
       ctx.effect(() => {
         const tag = document.createElement('style');
-        tag.dataset.plugin = '@local/dsh-side-chat';
+        tag.dataset.plugin = 'dsh-plugin-side-chat';
         tag.textContent = CSS;
         document.head.appendChild(tag);
         return () => {

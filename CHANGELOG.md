@@ -6,7 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Renamed the package from `@local/dsh-side-chat` to **`dsh-plugin-side-chat`**, so it can be
+  installed by name (`pnpm add dsh-plugin-side-chat`, or the same name in the plugin manager) and
+  resolved as a profile bundle.
+- Dropped `"private": true`, added `engines.dsh` (`^0.2.2-rc.1`) so an incompatible host refuses the
+  install before writing anything, and `prepublishOnly` now runs the boot simulation.
+- README install section: install by name first, GitHub and local directory as alternatives.
 
 ## [1.0.0] — 2026-11-10
 
