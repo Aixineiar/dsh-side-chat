@@ -6,6 +6,7 @@
 
 三种模式 —— 只回复 / 只读 / 完全继承，约束落在**实现层**，不靠提示词自律。
 
+[![npm](https://img.shields.io/npm/v/@aixineiar/dsh-side-chat.svg)](https://www.npmjs.com/package/@aixineiar/dsh-side-chat)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-DSH%20Web-4c6ef5.svg)](#兼容性与已知限制)
 [![dsh](https://img.shields.io/badge/dsh-0.2.2--rc.1-1f9d55.svg)](#兼容性与已知限制)

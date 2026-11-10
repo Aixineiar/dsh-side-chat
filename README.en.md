@@ -6,6 +6,7 @@
 
 Three modes — *reply only* / *read-only* / *fully inherited* — enforced in code, not by asking the model politely.
 
+[![npm](https://img.shields.io/npm/v/@aixineiar/dsh-side-chat.svg)](https://www.npmjs.com/package/@aixineiar/dsh-side-chat)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-DSH%20Web-4c6ef5.svg)](#compatibility)
 [![dsh](https://img.shields.io/badge/dsh-0.2.2--rc.1-1f9d55.svg)](#compatibility)

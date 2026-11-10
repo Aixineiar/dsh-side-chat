@@ -12,6 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installed by name (`pnpm add @aixineiar/dsh-side-chat`, or the same name in the plugin manager) and
   resolved as a profile bundle. The unscoped names (`dsh-side-chat`, `dsh-plugin-side-chat`) were
   already taken on npm.
+- Published to npm as **`@aixineiar/dsh-side-chat@1.0.0`**: `pnpm add @aixineiar/dsh-side-chat`, or
+  *Add plugin* in the DSH plugin manager with the same name.
 - Dropped `"private": true`, added `engines.dsh` (`^0.2.2-rc.1`) so an incompatible host refuses the
   install before writing anything, and `prepublishOnly` now runs the boot simulation.
 - README install section: install by name first, GitHub and local directory as alternatives.
