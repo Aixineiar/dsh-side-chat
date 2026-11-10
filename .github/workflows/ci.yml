@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boot-sim:
+    name: boot simulation (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The plugin has no dependencies and no build step: the check is the
+      # boot simulation, which loads both halves under stubs.
+      - name: Run the boot simulation
+        run: node dev/boot-sim.mjs

@@ -4,3 +4,16 @@
 
 # Dependencies
 node_modules/
+
+# Local review reports (managed report area, not part of the published plugin)
+.code-review/
+
+# Boot-simulation exports
+out.json
+*.export.json
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
