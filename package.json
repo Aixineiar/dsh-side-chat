@@ -17,11 +17,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/dsh-side-chat.git"
+    "url": "git+https://github.com/Aixineiar/dsh-side-chat.git"
   },
-  "homepage": "https://github.com/OWNER/dsh-side-chat#readme",
+  "homepage": "https://github.com/Aixineiar/dsh-side-chat#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/dsh-side-chat/issues"
+    "url": "https://github.com/Aixineiar/dsh-side-chat/issues"
   },
   "engines": {
     "node": ">=20"

@@ -56,10 +56,9 @@ Diff two exports to see exactly what a prompt change did.
 
 ## Repository housekeeping
 
-Three things are placeholders until the repository is published; replace them once and forget them:
-
-- `package.json` → `repository`, `homepage`, `bugs` (`<owner>/dsh-side-chat`).
-- `LICENSE` → the copyright holder line, if you want a real name instead of "contributors".
+The package metadata points at the published repository (`Aixineiar/dsh-side-chat`); if the project
+moves, update `repository` / `homepage` / `bugs` in `package.json` in the same commit as the move.
+`LICENSE` names "dsh-side-chat contributors" — change it if you want a specific holder.
 
 ## Commit messages
 
