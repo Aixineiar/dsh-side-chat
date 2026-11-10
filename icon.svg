@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Side chat">
+  <rect x="4" y="6" width="40" height="52" rx="10" fill="#2f6feb"/>
+  <path d="M14 46 L14 54 L23 46 Z" fill="#2f6feb"/>
+  <rect x="50" y="6" width="10" height="52" rx="5" fill="#9db8f5"/>
+  <circle cx="17" cy="24" r="3.2" fill="#ffffff"/>
+  <circle cx="27" cy="24" r="3.2" fill="#ffffff"/>
+  <circle cx="37" cy="24" r="3.2" fill="#ffffff"/>
+  <rect x="14" y="34" width="19" height="4" rx="2" fill="#ffffff" opacity="0.85"/>
+</svg>

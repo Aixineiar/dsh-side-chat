@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Side chat",
+    "description": "Opens a temporary read-only side conversation in the right sidebar that inherits this session's context and reuses the main chat UI."
+  }
+}

@@ -1,0 +1,6 @@
+# Runtime diagnostics
+.host-load.log
+.client-error.log
+
+# Dependencies
+node_modules/
