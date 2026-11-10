@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
       return primitivesCache;
     }
     const h = React.createElement;
-    const { useEffect, useLayoutEffect, useRef, useState } = React;
+    const { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } = React;
 
     /** Locale namespace owned by this plugin. */
     const NS = 'sideChat';
@@ -56,26 +56,22 @@ window.__ModuleLoader__.load({
       'tab.sideTitle': '侧边 · {title}',
       'guide.title': '侧边对话',
       'guide.description': '继承当前会话上下文 · 只回复 / 只读 / 完全继承',
+      'guide.status': '当前状态：{mode}',
+      'guide.blank': '主会话还没有可继承的内容：先发一条消息，再打开侧边对话',
       'mode.label': '侧边对话模式',
       'mode.reply': '只回复',
       'mode.read': '只读',
       'mode.full': '完全继承',
-      'mode.reply.hint': '拒绝所有工具，只能基于继承的上下文回答',
-      'mode.read.hint': '只能读不能写',
-      'mode.full.hint': '与主会话一致，没有任何额外限制',
       'button.label': '侧边对话',
       'button.tooltip': '在右侧栏打开侧边对话（继承本会话上下文，默认只读）',
-      'launcher.title': '侧边对话',
-      'launcher.body': '在右侧栏打开一个临时对话：它继承当前会话到打开瞬间的全部上下文，沿用当前的智能体预设，可以单独选择模型。',
-      'launcher.readonly': '默认只读：只保留读取类工具，改文件、执行命令等写操作会被拒绝。',
-      'launcher.temporary': '关闭这个页签就会连同会话一起消失，不会留下历史。',
-      'launcher.action': '开始侧边对话',
       'launcher.opening': '正在打开侧边对话…',
       'status.snapshot': '上下文截至 {time}',
       'status.running': '主会话仍在运行',
-      'status.sync': '同步最新',
+      'status.sync': '以最新快照新开',
+      'status.syncHint': '用主会话的最新快照新开一条，并关闭当前侧边对话',
       'status.syncing': '同步中…',
       'status.latest': '已是最新',
+      'status.empty': '主会话还没有可继承的内容',
       'status.failed': '同步失败',
       'status.closeFailed': '关闭失败',
       'error.failed': '侧边对话打开失败',
@@ -85,26 +81,22 @@ window.__ModuleLoader__.load({
       'tab.sideTitle': 'Side · {title}',
       'guide.title': 'New side chat',
       'guide.description': 'Inherits this conversation · reply only / read-only / full',
+      'guide.status': 'Current mode: {mode}',
+      'guide.blank': 'The main conversation has nothing to inherit yet: send a message first',
       'mode.label': 'Side-chat mode',
       'mode.reply': 'Reply only',
       'mode.read': 'Read-only',
       'mode.full': 'Fully inherited',
-      'mode.reply.hint': 'No tools at all: answers from the inherited context',
-      'mode.read.hint': 'May read, may not write',
-      'mode.full.hint': 'Same capabilities as the main conversation, no extra limits',
       'button.label': 'Side chat',
       'button.tooltip': 'Open a side chat in the right sidebar (inherits this conversation, read-only)',
-      'launcher.title': 'Side chat',
-      'launcher.body': 'Opens a temporary conversation in the right sidebar. It inherits everything this conversation had committed when it opened, keeps the current agent preset, and can pick its own model.',
-      'launcher.readonly': 'Read-only by default: only inspection tools stay available; file edits, commands and other writes are refused.',
-      'launcher.temporary': 'Closing this tab removes the conversation with it; no history is kept.',
-      'launcher.action': 'Start side chat',
       'launcher.opening': 'Opening the side chat…',
       'status.snapshot': 'Context as of {time}',
       'status.running': 'Main conversation running',
-      'status.sync': 'Sync latest',
-      'status.syncing': 'Syncing…',
+      'status.sync': 'Open a fresh snapshot',
+      'status.syncHint': 'Opens a new side chat from the latest snapshot and closes this one',
+      'status.syncing': 'Opening…',
       'status.latest': 'Already latest',
+      'status.empty': 'The main conversation has nothing to inherit yet',
       'status.failed': 'Sync failed',
       'status.closeFailed': 'Close failed',
       'error.failed': 'Could not open the side chat',
@@ -129,7 +121,6 @@ window.__ModuleLoader__.load({
       '.dsh-side-chat-launcher p{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);}',
       '.dsh-side-chat-launcher button[data-primary="true"]{align-self:flex-start;margin-top:2px;border:0;border-radius:8px;padding:6px 14px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:12px;line-height:18px;cursor:pointer;}',
       '.dsh-side-chat-launcher button[data-primary="true"]:disabled{opacity:.5;cursor:default;}',
-      '.dsh-side-chat-error{color:var(--dsw-alias-state-error-primary)!important;}',
       '.dsh-side-chat-failure{color:var(--dsw-alias-state-error-primary)!important;}',
       '.dsh-side-chat-tip-bubble{display:inline-flex;align-items:safe center;gap:8px;position:fixed;z-index:1100;width:max-content;box-sizing:border-box;max-width:min(50vw,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:3px 7px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-tooltip-bg);color:var(--dsw-static-neutral-bluish-00);font-size:13px;line-height:20px;white-space:pre-line;overflow-wrap:break-word;pointer-events:none;animation:dsh-side-chat-tip-in .15s var(--ds-ease-in-out);}',
       '@keyframes dsh-side-chat-tip-in{from{opacity:0}to{opacity:1}}',
@@ -410,6 +401,27 @@ window.__ModuleLoader__.load({
         return text;
       }
 
+      /** One Session-list source per main Session, shared across renders. */
+      const blankSources = new Map();
+
+      /**
+       * Reactive "has committed nothing" state of one main Session. A card that
+       * cannot inherit anything says so instead of failing after the click.
+       * @param sessionId - the main Session.
+       * @returns whether it has no committed event to inherit.
+       */
+      function useBlankSession(sessionId) {
+        let source = blankSources.get(sessionId);
+        if (source === undefined) {
+          source = {
+            subscribe: (listener) => ctx.sessions.list.subscribe(listener),
+            getSnapshot: () => ctx.sessions.list.getSnapshot().byId[sessionId]?.blank === true,
+          };
+          blankSources.set(sessionId, source);
+        }
+        return useSyncExternalStore(source.subscribe, source.getSnapshot);
+      }
+
       /** Side chats created in this page lifetime (the bridge's routing table). */
       const children = new Set();
 
@@ -430,6 +442,9 @@ window.__ModuleLoader__.load({
             ok: false,
             error: { code: 'side-chat/bridge-failed', message: message(error), details: {} },
           });
+          const settle = (value) => ({ ok: true, value: value === undefined ? {} : value });
+          /** `prompt` answers the reference implementation's shape, `messageId` key included. */
+          const promptValue = (value) => ({ accepted: true, messageId: value === undefined ? undefined : value.messageId });
           const forward = (name, invoke) => {
             const original = namespace[name];
             if (typeof original !== 'function') return;
@@ -437,10 +452,7 @@ window.__ModuleLoader__.load({
               if (request === undefined || request === null || !children.has(request.sessionId)) {
                 return original.call(this, request, signal);
               }
-              return invoke(request, signal).then(
-                (value) => ({ ok: true, value: value === undefined ? {} : value }),
-                fail,
-              );
+              return invoke(request, signal).then(settle, fail);
             };
           };
           forward('prompt', (request) =>
@@ -450,7 +462,7 @@ window.__ModuleLoader__.load({
               mode: request.mode,
               content: request.content,
               clientTimeZone: request.clientTimeZone,
-            }).then((value) => ({ accepted: true, ...(value === undefined ? {} : { messageId: value.messageId }) })),
+            }).then(promptValue),
           );
           forward('cancel', (request) => callHost('cancel', { childId: request.sessionId }).then(() => ({ accepted: true })));
           forward('selectModel', (request) =>
@@ -464,41 +476,6 @@ window.__ModuleLoader__.load({
           bridged = true;
         } catch (error) {
           console.warn('side-chat: cannot bridge Session commands', error);
-        }
-      }
-
-      /**
-       * Give one retained side-chat handle the same bridge, so a send that reads
-       * the handle directly (instead of the remote namespace) still lands in this
-       * plugin's route.
-       * @param handle - retained session reference.
-       */
-      function bridgeHandle(handle) {
-        if (handle === undefined || handle === null || handle.__sideChatHandle === true) return;
-        const fail = (error) => ({
-          ok: false,
-          error: { code: 'side-chat/bridge-failed', message: message(error), details: {} },
-        });
-        const prompt = handle.prompt;
-        const cancel = handle.cancel;
-        try {
-          handle.prompt = function (content, mode, signal, requestId) {
-            if (typeof this.sessionId !== 'string' || !children.has(this.sessionId)) {
-              return prompt.call(this, content, mode, signal, requestId);
-            }
-            const childId = this.sessionId;
-            return callHost('prompt', { childId: childId, requestId: requestId, mode: mode, content: content }).then(
-              (value) => ({ ok: true, value: { accepted: true, messageId: value === undefined ? undefined : value.messageId } }),
-              fail,
-            );
-          };
-          handle.cancel = function (signal) {
-            if (typeof this.sessionId !== 'string' || !children.has(this.sessionId)) return cancel.call(this, signal);
-            return callHost('cancel', { childId: this.sessionId }).then(() => ({ ok: true, value: { accepted: true } }), fail);
-          };
-          handle.__sideChatHandle = true;
-        } catch (error) {
-          console.warn('side-chat: cannot bridge the retained handle', error);
         }
       }
 
@@ -563,32 +540,39 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * The newest committed event seq of a Session. The Host reports it as
-       * `state.cursor` for a live Agent (session.seq - 1); the retained event
-       * window is the fallback when the passive-state endpoint is unavailable.
+       * The newest committed event seq of a Session, with the reason a read
+       * failed. `seq === undefined` means "could not read it"; `-1` means "read
+       * it, and the Session has committed nothing".
+       * @param sessionId - Session to read.
+       * @returns `{ seq, reason }`.
        */
       async function latestSeq(sessionId) {
         const remote = ctx.get('remote.session') ?? (ctx.get('remote') || {}).session;
+        let reason = '';
         if (remote !== undefined && typeof remote.state === 'function') {
           try {
             const result = await remote.state({ sessionId: sessionId });
             if (result !== undefined && result.ok === true && Number.isSafeInteger(result.value && result.value.cursor)) {
-              return result.value.cursor;
+              return { seq: result.value.cursor, reason: '' };
             }
+            reason = 'session/state 没有返回游标';
           } catch (error) {
-            console.warn('side-chat: session.state unavailable', error);
+            reason = 'session/state 读取失败：' + message(error);
           }
+        } else {
+          reason = 'session/state 不可用';
         }
         try {
-          return await ctx.sessions.using(sessionId, { source: SOURCE }, async (reference) => {
+          const seq = await ctx.sessions.using(sessionId, { source: SOURCE }, async (reference) => {
             await reference.ready;
             const entries = reference.binding.eventSource.getSnapshot().entries;
             const last = entries[entries.length - 1];
-            const seq = last && last.event ? last.event.seq : undefined;
-            return Number.isSafeInteger(seq) ? seq : -1;
+            const lastSeq = last && last.event ? last.event.seq : undefined;
+            return Number.isSafeInteger(lastSeq) ? lastSeq : -1;
           });
+          return { seq: seq, reason: '' };
         } catch (error) {
-          return -1;
+          return { seq: undefined, reason: reason === '' ? '会话事件读取失败：' + message(error) : reason };
         }
       }
 
@@ -604,20 +588,24 @@ window.__ModuleLoader__.load({
         // The remote namespace may not exist yet when the entry activates, so the
         // bridge is retried on the first real use.
         bridgeSessionCommands();
-        // The Host decides the boundary from its own newest committed seq; this
-        // value is informational only. A failed passive read must not block the
-        // open, because the Host still knows the true seq.
-        const atSeq = Number.isSafeInteger(knownSeq) ? knownSeq : await latestSeq(parentId);
+        // The Host decides the boundary from its own newest committed seq, so the
+        // request carries no `atSeq`: the probe below only feeds the tab address,
+        // and the answer's own `atSeq` stays authoritative.
+        const probed = Number.isSafeInteger(knownSeq) ? knownSeq : (await latestSeq(parentId)).seq;
         const chosen = normalizeMode(mode === undefined ? storedMode() : mode);
         let created;
         try {
-          created = await callHost('open', { sessionId: parentId, atSeq: atSeq, mode: chosen });
+          created = await callHost('open', { sessionId: parentId, mode: chosen });
         } catch (error) {
           throw new Error(t('error.failed') + ': ' + message(error));
         }
         if (created === undefined || typeof created.childId !== 'string') throw new Error(t('error.failed'));
         const childId = created.childId;
-        const childAtSeq = Number.isSafeInteger(created.atSeq) ? created.atSeq : atSeq;
+        const childAtSeq = Number.isSafeInteger(created.atSeq)
+          ? created.atSeq
+          : Number.isSafeInteger(probed) && probed >= 0
+            ? probed
+            : undefined;
         const childMode = normalizeMode(created.mode === undefined ? chosen : created.mode);
         const label = typeof created.label === 'string' ? created.label : '';
         const address = sideChatAddress(childId, parentId, childAtSeq, Date.now(), childMode, label);
@@ -792,21 +780,37 @@ window.__ModuleLoader__.load({
         const phaseState = useState('idle');
         const phase = phaseState[0];
         const setPhase = phaseState[1];
+        const failureState = useState('');
+        const failure = failureState[0];
+        const setFailure = failureState[1];
         const when = parsed.at === undefined ? '' : new Date(parsed.at).toLocaleString();
         const sync = () => {
           if (phase === 'busy') return;
           setPhase('busy');
+          setFailure('');
           void (async () => {
             try {
-              const next = await latestSeq(parsed.parentId);
-              if (!Number.isSafeInteger(next) || next <= (parsed.atSeq === undefined ? -1 : parsed.atSeq)) {
+              const probed = await latestSeq(parsed.parentId);
+              if (probed.seq === undefined) {
+                // "Could not read it" is not "nothing changed": say which one it was.
+                setFailure(probed.reason);
+                setPhase('failed');
+                window.setTimeout(() => setPhase('idle'), 4000);
+                return;
+              }
+              if (probed.seq < 0) {
+                setPhase('empty');
+                window.setTimeout(() => setPhase('idle'), 3000);
+                return;
+              }
+              if (probed.seq <= (parsed.atSeq === undefined ? -1 : parsed.atSeq)) {
                 setPhase('latest');
                 window.setTimeout(() => setPhase('idle'), 2000);
                 return;
               }
               // Keep this thread's mode: the remembered mode belongs to the card,
               // not to a conversation the user already opened.
-              const created = await createSideChat(parsed.parentId, next, parsed.mode);
+              const created = await createSideChat(parsed.parentId, probed.seq, parsed.mode);
               const actions = tab && tab.actions;
               if (actions !== undefined && typeof actions.openResource === 'function') {
                 actions.openResource(created.address, { kind: CHAT_KIND, replaceTab: true });
@@ -816,6 +820,7 @@ window.__ModuleLoader__.load({
               setPhase('idle');
             } catch (error) {
               console.warn('side-chat: sync failed', error);
+              setFailure(message(error));
               setPhase('failed');
               window.setTimeout(() => setPhase('idle'), 3000);
             }
@@ -828,10 +833,19 @@ window.__ModuleLoader__.load({
           running ? h('span', {}, '· ' + t('status.running')) : null,
           h('span', { className: 'dsh-side-chat-status-spacer' }),
           phase === 'latest' ? h('span', {}, t('status.latest')) : null,
-          phase === 'failed' ? h('span', { className: 'dsh-side-chat-failure' }, t('status.failed')) : null,
+          phase === 'empty' ? h('span', {}, t('status.empty')) : null,
+          phase === 'failed'
+            ? h('span', { className: 'dsh-side-chat-failure' }, t('status.failed') + (failure === '' ? '' : '：' + failure))
+            : null,
           h(
             'button',
-            { type: 'button', className: 'dsh-side-chat-link', disabled: phase === 'busy', onClick: sync },
+            {
+              type: 'button',
+              className: 'dsh-side-chat-link',
+              title: t('status.syncHint'),
+              disabled: phase === 'busy',
+              onClick: sync,
+            },
             phase === 'busy' ? t('status.syncing') : t('status.sync'),
           ),
         );
@@ -1112,6 +1126,7 @@ window.__ModuleLoader__.load({
         const AnchorButton = kit !== null && kit.Button ? kit.Button : 'button';
         const Chevron = kit !== null && kit.IconChevronDownOutlineRegular ? kit.IconChevronDownOutlineRegular : LocalChevron;
         const closeIssue = useCloseIssue(sessionId);
+        const blank = useBlankSession(sessionId);
         const modeState = useState(() => storedMode());
         const mode = modeState[0];
         const setMode = modeState[1];
@@ -1125,10 +1140,10 @@ window.__ModuleLoader__.load({
         const failureState = useState('');
         const failure = failureState[0];
         const setFailure = failureState[1];
-        const note = failure !== '' ? failure : closeIssue;
+        const note = failure !== '' ? failure : blank ? t('guide.blank') : closeIssue;
 
         const start = (chosen) => {
-          if (busyRef.current) return;
+          if (busyRef.current || blank) return;
           busyRef.current = true;
           setOpen(false);
           rememberMode(chosen);
@@ -1166,7 +1181,7 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'dsh-side-chat-guide-main',
             'aria-label': note === '' ? String(props.title) : note,
-            disabled: busy,
+            disabled: busy || blank,
             onClick: () => start(mode),
           }),
           h(
@@ -1204,6 +1219,7 @@ window.__ModuleLoader__.load({
                       'aria-label': label('mode.label'),
                       'aria-haspopup': 'menu',
                       'aria-expanded': open,
+                      disabled: busy || blank,
                       onClick: () => setOpen((value) => !value),
                     },
                     h(Chevron, {}),
@@ -1211,9 +1227,11 @@ window.__ModuleLoader__.load({
                 }),
               ),
             ),
-            props.description === undefined
-              ? null
-              : h('span', { className: 'dsh-side-chat-guide-desc', 'aria-hidden': 'true' }, note === '' ? props.description : note),
+            h(
+              'span',
+              { className: 'dsh-side-chat-guide-desc', 'aria-hidden': 'true' },
+              note === '' ? label('guide.status', { mode: label('mode.' + mode) }) : note,
+            ),
           ),
         );
       }
@@ -1277,9 +1295,10 @@ window.__ModuleLoader__.load({
                   // Retained by ID, not by subagent address: an addressed Session
                   // loses the native model picker, and its prompts would route
                   // through subagent delivery, which reports back to the parent.
-                  // The bridge above answers the commands this Session refuses.
+                  // The bridge above answers the commands this Session refuses;
+                  // `ClientSessionReference` itself carries only `binding`, so the
+                  // send always arrives through `remote.session.prompt`.
                   reference = ctx.sessions.retain(parsed.childId, { source: SOURCE, signal: signal });
-                  bridgeHandle(reference);
                 } catch (error) {
                   yield {
                     ok: false,

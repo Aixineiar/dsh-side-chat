@@ -4,14 +4,45 @@
   "private": true,
   "type": "module",
   "description": "Temporary side conversation in the right sidebar with three modes (reply only / read-only / fully inherited), rendering the same chat UI as the main conversation.",
+  "license": "MIT",
+  "author": "dsh-side-chat contributors",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "side-chat",
+    "sidebar",
+    "read-only",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/dsh-side-chat.git"
+  },
+  "homepage": "https://github.com/OWNER/dsh-side-chat#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/dsh-side-chat/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
+  "scripts": {
+    "test": "node dev/boot-sim.mjs",
+    "dev:boot-sim": "node dev/boot-sim.mjs"
+  },
   "files": [
     "index.js",
+    "prompt.js",
+    "seed.js",
+    "tools.js",
+    "routes.js",
+    "lifecycle.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

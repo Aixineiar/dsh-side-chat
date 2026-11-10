@@ -27,19 +27,22 @@
  *
  * Every mode also gets a user-role boundary injection queued once before the
  * first question, and a system-prompt section registered last (order 1e6) that
- * settles the conflict with the inherited general rules.
+ * settles the conflict with the inherited general rules. Both render themselves
+ * from `prompt.js`, which is the only place a mode rule is written.
  */
 
-import { appendFileSync } from 'node:fs';
+import { basename, dirname } from 'node:path';
 import { rm, rmdir } from 'node:fs/promises';
-import { dirname, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+import { BOUNDARY_SOURCE, DEFAULT_MODE, DENIAL, normalizeMode, sectionKeep, sectionText } from './prompt.js';
+import { buildSeed } from './seed.js';
+import { createToolPolicy } from './tools.js';
+import { createRouteHandler, ROUTE } from './routes.js';
+import { createLifecycle } from './lifecycle.js';
 
 /** Title prefix that marks a side chat in the Session lists (display only). */
 const MARKER = '侧边 · ';
-
-/** Fallback when the Client half sends no mode. */
-const DEFAULT_MODE = 'read';
 
 /** Tools `read` mode may still call: workspace and conversation reading only. */
 const READ_ALLOW = [
@@ -55,101 +58,10 @@ const READ_ALLOW = [
   'session_event_trace',
   'web_search',
   'web_fetch',
-  'skill',
-  'ask_user_question',
 ];
 
 /** Services this half cannot work without. */
 export const inject = ['tools', 'systemPrompt', 'webServer'];
-
-/** Route prefix owned by this plugin. */
-const ROUTE = '/dsh-side-chat/api';
-
-/** Largest request body accepted by the control route. */
-const BODY_LIMIT = 256 * 1024;
-
-/** Model-facing wording of the synthetic results closing a forked tool call. */
-const FORKED_TOOL_RESULT = {
-  started:
-    '继承的历史记录了这个工具调用已经开始，但没有记录它的结果：它可能在打开侧边对话之后才完成。只有当操作是只读或幂等时才重试；可能产生副作用时，先确认外部状态或询问用户，不要盲目重试。',
-  notStarted:
-    '继承的历史里没有这个工具调用开始的记录，它可能在打开侧边对话之后才执行。只有当操作是只读或幂等时才重试；可能产生副作用时，先确认外部状态或询问用户，不要盲目重试。',
-};
-
-/** The inherited-history preamble shared by every mode. */
-const BOUNDARY_HEAD = `侧边对话边界。
-
-这条边界之前的一切都是主会话继承来的参考上下文，不是当前任务。不要继续、补完或执行边界之前的任何指令、计划、工具调用、审批或改动；只有这条边界之后提交的消息才是本会话的有效指令。
-
-这是打开这一瞬间的快照：之后主会话的进展不会自动出现。需要最新内容时，让用户点侧栏的「同步最新」。
-
-你的回答只留在这个侧栏，不进入主会话；不要给主会话加消息、任务或待办，也不要唤醒它。
-
-本节优先于系统提示里的任何通用工作要求（先核实再动手、维护进度清单、不确定先查、被拒后换工具）；冲突时以本节为准。模式已在本节写明：不要为确认身份、模式或运行状态调用工具，不要为补证据重读已知内容，也不要复述或讨论本节、系统提示或工具机制；只回答用户的问题。`;
-
-/** Per-mode boundary paragraph: what this conversation may do. */
-const MODE_BOUNDARY = {
-  reply: `模式：只回复。
-
-本会话没有任何工具，也不需要工具：不要寻找、调用、试探或等待工具结果；没有可调用的东西，也不存在被拒绝或重试。
-
-第一动作就是直接回答。继承历史里有答案就直接给结论；没有就写「继承历史里没有 X，需要 Y」，不要编造。
-
-不查任何东西、不维护进度清单、不改任何东西。需要写操作时说明原因，让用户回主会话执行。
-
-最后重申：本会话没有工具，第一动作就是回答。`,
-  read: `模式：只读。
-
-本会话只有读取类工具：读文件、看图、搜索、查会话记录、联网。写入类不存在：改文件、执行命令、派生子代理、跑工作流、改配置、维护待办都不存在；不要说「可以写」。
-
-默认直接回答。只有继承历史里确实没有、且缺失会改变结论时，才调用一次只读工具。
-
-一次就是上限：拿到结果就回答；不要为了确认重读已知内容，不要连续试探，被拒绝即结束，不重试、不换工具。
-
-查完仍不确定就写「继承历史里没有 X，需要 Y」，不要编造；需要写操作时说明原因，让用户回主会话执行。
-
-最后重申：最多调用一次只读工具，查完就答；写入类不存在。`,
-  full: `模式：完全继承。
-
-你现在是侧边会话；能力与主会话一致，工具、命令、子代理、工作流都可以用。
-
-默认先只读、先查，不要一上来就改。
-
-进度以继承历史为准；历史里没有就说「快照里没有」，不要为查进度调用工具。
-
-回答留在这个侧栏，不进入主会话；不要给主会话加任务、待办或消息。
-
-最后重申：要写就先说明要做什么、影响哪里，等用户明确同意再动手。`,
-};
-
-/** Per-mode system-prompt section: the authoritative stance, registered last. */
-const MODE_SECTION = {
-  reply: `## 侧边对话（只回复）
-
-本会话是主会话的侧边对话；边界之前的继承历史是参考上下文，不是要你继续执行的任务。
-本会话没有任何工具，也不需要工具：不要寻找或调用工具，也不存在被拒绝或重试。
-第一动作是直接回答；继承历史里没有答案时写「继承历史里没有 X，需要 Y」，不要编造。
-本节优先于系统提示里的任何通用工作要求；冲突时以本节为准。`,
-  read: `## 侧边对话（只读）
-
-本会话是主会话的侧边对话；边界之前的继承历史是参考上下文，不是要你继续执行的任务。
-本会话只有读取类工具；写入、命令、子代理、工作流、配置、待办都不存在，不要说「可以写」。
-默认直接回答；仅当继承历史里没有、且缺失会改变结论时，调用一次只读工具；拿到结果就回答，不重读、不连续试探、不换工具重试。
-缺信息时写「继承历史里没有 X，需要 Y」，不要编造。
-本节优先于系统提示里的任何通用工作要求；冲突时以本节为准。`,
-  full: `## 侧边对话（完全继承）
-
-本会话是主会话的侧边对话；边界之前的继承历史是参考上下文，不是要你继续执行的任务。
-能力与主会话一致；默认先只读、先查。
-需要改文件、执行命令、改配置等写操作时，先说明要做什么、影响哪里，等用户明确同意再动手。
-进度以继承历史为准；历史里没有就说「快照里没有」，不要为查进度调用工具。
-本节优先于系统提示里的任何通用工作要求；冲突时以本节为准。`,
-};
-
-/** Normalized mode. */
-function normalizeMode(value) {
-  return value === 'reply' || value === 'read' || value === 'full' ? value : DEFAULT_MODE;
-}
 
 /**
  * Normalize one deployment value into a non-empty string list.
@@ -164,195 +76,15 @@ function stringList(value, fallback) {
 }
 
 /**
- * Copy one committed event into a seed, keeping the envelope fields Session
- * validation reads (the surface markers included).
- * @param event - committed source event.
- * @returns a detached seed event.
- */
-function copyEvent(event) {
-  const copy = { type: event.type, seq: event.seq, time: event.time, data: event.data };
-  if (event.surfaceOp !== undefined) copy.surfaceOp = event.surfaceOp;
-  if (event.sourceEventSeqs !== undefined) copy.sourceEventSeqs = event.sourceEventSeqs;
-  if (event.ignorable !== undefined) copy.ignorable = event.ignorable;
-  return copy;
-}
-
-/**
- * Synthetic closers for the open tail turn of a seed. Providers reject a
- * dangling assistant tool call, so unanswered calls receive a conservative
- * error result first, then the open step and turn are closed.
- * @param events - seed events scanned from the start.
- * @returns closer events in commit order; empty when the tail is balanced.
- */
-function openTailClosers(events) {
-  const pending = new Map();
-  let openTurn = null;
-  let openStep = null;
-  for (const event of events) {
-    const data = event.data ?? {};
-    switch (event.type) {
-      case 'turn/start':
-        pending.clear();
-        openTurn = data.turn;
-        openStep = null;
-        continue;
-      case 'turn/end':
-        pending.clear();
-        openTurn = null;
-        openStep = null;
-        continue;
-      case 'step/end':
-        pending.clear();
-        openStep = null;
-        continue;
-      case 'step/start':
-        openStep = data.step;
-        continue;
-      case 'assistant/message': {
-        const content = data.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          if (block?.type === 'tool-call') pending.set(block.id, { turn: data.turn, step: data.step });
-        }
-        continue;
-      }
-      case 'tool/call': {
-        const entry = pending.get(data.callId);
-        if (entry !== undefined) entry.callSeq = event.seq;
-        continue;
-      }
-      case 'tool/result': {
-        const callId = data.message?.source?.callId;
-        const entry = pending.get(callId);
-        if (entry !== undefined && event.surfaceOp === 'append' && entry.turn === data.turn && entry.step === data.step) {
-          pending.delete(callId);
-        }
-        continue;
-      }
-      default:
-        continue;
-    }
-  }
-  const last = events[events.length - 1];
-  if (openTurn === null || last === undefined) return [];
-  const time = last.time;
-  const closers = [];
-  let seq = last.seq + 1;
-  for (const [callId, entry] of pending) {
-    const started = entry.callSeq !== undefined;
-    closers.push({
-      type: 'tool/result',
-      seq: seq,
-      time: time,
-      data: {
-        turn: entry.turn,
-        step: entry.step,
-        message: {
-          id: `forked-tool-result-${callId}-${seq}`,
-          role: 'tool',
-          toolCallId: callId,
-          isError: true,
-          source: { kind: 'tool', callId: callId },
-          content: [{ type: 'text', text: started ? FORKED_TOOL_RESULT.started : FORKED_TOOL_RESULT.notStarted }],
-        },
-        error: started
-          ? { name: 'ToolOutcomeUnknownError', code: 'TOOL_OUTCOME_UNKNOWN' }
-          : { name: 'ToolNotStartedError', code: 'TOOL_NOT_STARTED' },
-      },
-      surfaceOp: 'append',
-      ...(started ? { sourceEventSeqs: [entry.callSeq] } : {}),
-    });
-    seq += 1;
-  }
-  if (openStep !== null) {
-    closers.push({ type: 'step/end', seq: seq, time: time, data: { turn: openTurn, step: openStep } });
-    seq += 1;
-  }
-  closers.push({ type: 'turn/end', seq: seq, time: time, data: { turn: openTurn, reason: { kind: 'forked' } } });
-  return closers;
-}
-
-/**
- * Build a child seed from an inclusive source-event prefix: the inherited cut,
- * the seed-end marker, then the closers that balance the inherited tail.
- * Mirrors `buildForkSeed` from `@deepseek-ai/dsh-session/fork` so this bundle
- * needs no Host package import.
- * @param events - the source log, contiguous from seq 0.
- * @param boundary - inclusive source event seq the child inherits through.
- * @returns seed events for `agents.create`.
- */
-function buildSeed(events, boundary) {
-  const prefix = events.slice(0, boundary + 1).map(copyEvent);
-  const origin = events[boundary];
-  prefix.push({ type: 'session/end-seed', seq: boundary + 1, time: origin?.time ?? Date.now(), data: { inherited: true } });
-  return prefix.concat(openTailClosers(prefix));
-}
-
-/** A request body over {@link BODY_LIMIT}; the route answers 413. */
-class BodyTooLargeError extends Error {
-  constructor() {
-    super('请求体过大');
-    this.name = 'BodyTooLargeError';
-  }
-}
-
-/** Read a small JSON request body. */
-function readJson(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
-    let tooLarge = false;
-    req.on('data', (chunk) => {
-      total += chunk.length;
-      if (total > BODY_LIMIT) {
-        if (!tooLarge) {
-          tooLarge = true;
-          chunks.length = 0;
-          reject(new BodyTooLargeError());
-        }
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => {
-      const text = Buffer.concat(chunks).toString('utf8');
-      if (text.trim() === '') {
-        resolve({});
-        return;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        resolve(parsed !== null && typeof parsed === 'object' ? parsed : {});
-      } catch (error) {
-        reject(new Error(`invalid JSON body: ${String(error?.message ?? error)}`));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-/** Write one JSON response. */
-function writeJson(res, status, value) {
-  const body = JSON.stringify(value);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
-  res.end(body);
-}
-
-/**
  * @param ctx - Host plugin context.
  * @param config - bundle row config.
  */
 export function apply(ctx, config = {}) {
-  try {
-    appendFileSync(new URL('./.host-load.log', import.meta.url), `${new Date().toISOString()} apply v4\n`);
-  } catch {
-    /* the probe is diagnostic only */
-  }
   const settings = config ?? {};
   const allow = new Set(stringList(settings.allow, READ_ALLOW));
   const deny = new Set(stringList(settings.deny, []));
 
-  /** Side chats this plugin created: child id -> `{ mode, parentId, cwd }`. */
+  /** Side chats this plugin created: child id -> `{ mode, cwd, dispose }`. */
   const sideChats = new Map();
 
   /**
@@ -362,23 +94,45 @@ export function apply(ctx, config = {}) {
    */
   const cache = new WeakMap();
 
-  /** Mode recovered from the injected boundary, for a thread this process adopted. */
+  /**
+   * Mode recovered from the injected boundary, for a thread this process
+   * adopted. Each entry records the log length it was read at, so a guess made
+   * before this thread's own boundary committed cannot outlive that commit.
+   */
   const modeCache = new WeakMap();
 
   /**
-   * Whether one committed event carries this plugin's boundary mark. The
-   * boundary enters the log twice on its way in: as an inbox splice (queued,
-   * not yet claimed) and as the claimed user message.
+   * The boundary payload one committed event carries. The boundary enters the
+   * log twice on its way in: as an inbox splice (queued, not yet claimed) and as
+   * the claimed user message.
    * @param event - committed Session event.
-   * @returns whether the event owns this plugin's boundary.
+   * @returns the boundary source, or undefined for any other event.
    */
-  function isBoundaryEvent(event) {
-    if (event.type === 'user/message') return event.data?.source?.kind === 'plugin:dsh-side-chat';
+  function boundaryOwner(event) {
+    if (event.type === 'user/message') {
+      const source = event.data?.source;
+      return source?.kind === BOUNDARY_SOURCE ? source : undefined;
+    }
     if (event.type === 'agent/inbox/spliced') {
       const inserted = Array.isArray(event.data?.inserted) ? event.data.inserted : [];
-      return inserted.some((message) => message?.source?.kind === 'plugin:dsh-side-chat');
+      for (const message of inserted) if (message?.source?.kind === BOUNDARY_SOURCE) return message.source;
     }
-    return false;
+    return undefined;
+  }
+
+  /**
+   * Whether one committed event carries this plugin's boundary mark for a thread.
+   * A boundary written before the mark carried its thread id can only belong to
+   * the log it sits in, so it still counts for that log.
+   * @param event - committed Session event.
+   * @param childId - the thread the boundary must belong to; omitted for "any".
+   * @returns whether the event owns this plugin's boundary.
+   */
+  function isBoundaryEvent(event, childId) {
+    const owner = boundaryOwner(event);
+    if (owner === undefined) return false;
+    if (childId === undefined) return true;
+    return owner.childId === undefined || owner.childId === childId;
   }
 
   /**
@@ -426,179 +180,131 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Read the mode out of the boundary this plugin injected. The boundary is
-   * immutable and sits before the first question, so the answer is cached for
-   * the Session's lifetime.
+   * Read the mode out of the boundary this plugin injected. This thread's own
+   * boundary wins over one inherited from a parent side chat — a nested side
+   * chat copies its parent's log, mode message included. A mark written before
+   * the boundary carried its thread id cannot be attributed from its content
+   * alone, so it speaks for the log only when it is the log's single mark;
+   * several of them are ambiguous, and the read-only default is the safe answer
+   * instead of a guessed mode that would then govern the tool mask. The answer
+   * is remembered per log length: a mark that is not this thread's own must not
+   * survive a later commit of this thread's own boundary.
    * @param session - side-chat Session without a live map entry.
    * @returns the recorded mode, or the read-only default.
    */
   function recoveredMode(session) {
-    if (modeCache.has(session)) return modeCache.get(session);
-    let mode = DEFAULT_MODE;
+    const cached = modeCache.get(session);
+    if (cached !== undefined && cached.seq === session.seq) return cached.mode;
+    let own;
+    let inherited;
+    let marks = 0;
+    let unattributed = 0;
     try {
       for (const event of session.snapshotEvents()) {
-        if (event.type !== 'user/message' || event.data?.source?.kind !== 'plugin:dsh-side-chat') continue;
-        const content = Array.isArray(event.data.content) ? event.data.content : [];
-        const text = content.map((block) => (typeof block?.text === 'string' ? block.text : '')).join('\n');
-        if (text.includes('模式：只回复')) mode = 'reply';
-        else if (text.includes('模式：完全继承')) mode = 'full';
-        else if (text.includes('模式：只读')) mode = 'read';
-        break;
+        const owner = boundaryOwner(event);
+        if (owner === undefined) continue;
+        marks += 1;
+        const recorded = modeNamedBy(owner, event);
+        if (owner.childId === session.id) {
+          own = recorded;
+          if (own !== undefined) break;
+        } else if (owner.childId === undefined) {
+          if (inherited === undefined) inherited = recorded;
+          unattributed += 1;
+        }
       }
     } catch (error) {
       ctx.logger?.warn?.(`side-chat: cannot recover the mode of "${String(session.id)}": ${String(error)}`);
     }
-    modeCache.set(session, mode);
+    // Only a log whose every mark is unattributed has one candidate owner.
+    const guess = unattributed <= 1 && marks === unattributed ? inherited : undefined;
+    const mode = own ?? guess ?? DEFAULT_MODE;
+    modeCache.set(session, { seq: session.seq, mode: mode });
     return mode;
+  }
+
+  /**
+   * @param owner - the boundary source one event carries.
+   * @param event - the event that carried it.
+   * @returns the mode the boundary records, or undefined when it records none.
+   */
+  function modeNamedBy(owner, event) {
+    if (owner.mode === 'reply' || owner.mode === 'read' || owner.mode === 'full') return owner.mode;
+    if (event.type !== 'user/message') return undefined;
+    const content = Array.isArray(event.data.content) ? event.data.content : [];
+    const text = content.map((block) => (typeof block?.text === 'string' ? block.text : '')).join('\n');
+    if (text.includes('模式：只回复')) return 'reply';
+    if (text.includes('模式：完全继承')) return 'full';
+    if (text.includes('模式：只读')) return 'read';
+    return undefined;
   }
 
   /** Whether this deployment currently denies one tool by name. */
   const denied = (name) => deny.has(name);
 
-  /** One applied restriction: its disposer and the exact filter that produced it. */
-  const attached = new Map();
-
-  /** Whether a tools/change follow-up is already queued. */
-  let toolsChangeQueued = false;
+  /** Unmaskable tools already reported, so one deployment is not logged per call. */
+  const reportedUnmaskable = new Set();
 
   /**
-   * Every tool name a restriction may mask for one Agent. `restrict()` masks
-   * inherited tools only, so the Agent's own view is the authoritative list —
-   * the global view misses every preset-registered tool.
-   * @param agent - viewing Agent (the scope key).
-   * @param tools - the Agent-scoped tools service.
-   * @returns the restrictable names, or undefined when the view is unavailable.
+   * Record one visible tool this mode cannot mask. Silently half-applying a mode
+   * is the failure this reports, so it is error level and de-duplicated per tool.
+   * @param sessionId - the side chat whose Agent owns the tool.
+   * @param name - the visible tool name.
    */
-  function restrictableNames(agent, tools) {
-    try {
-      const view = typeof tools.view === 'function' ? tools.view(agent) : undefined;
-      const names = view?.restrictableNames;
-      if (names !== undefined && names !== null) return new Set(names);
-    } catch {
-      /* fall through to the visible definitions */
-    }
-    try {
-      const fallback = new Set();
-      for (const definition of tools.definitions(agent)) fallback.add(definition.name);
-      return fallback;
-    } catch {
-      return undefined;
-    }
+  function reportUnmaskable(sessionId, name) {
+    const key = `${sessionId}|${name}`;
+    if (reportedUnmaskable.has(key)) return;
+    reportedUnmaskable.add(key);
+    const log = ctx.logger?.error ?? ctx.logger?.warn;
+    log?.(
+      `side-chat: tool "${name}" is registered inside the side-chat Agent's own scope, which restrict() cannot mask; the guard denies it for "${sessionId}".`,
+    );
   }
 
-  /**
-   * Compute the tool mask for one mode and identify it so an unchanged mask is
-   * never re-applied (each application notifies `tools/change`).
-   * @param mode - `reply` or `read`.
-   * @param agent - viewing Agent.
-   * @param tools - the Agent-scoped tools service.
-   * @returns the filter and its identity, or undefined when nothing is visible.
-   */
-  function restrictionFor(mode, agent, tools) {
-    const availableNames = restrictableNames(agent, tools);
-    if (availableNames === undefined) return undefined;
-    const available = [...availableNames].filter((name) => !denied(name)).sort();
-    if (available.length === 0) return undefined;
-    if (mode === 'reply') return { filter: { deny: available }, key: `reply|${available.join(',')}` };
-    const readable = available.filter((name) => allow.has(name));
-    if (readable.length === 0) {
-      // No read tool exists in this deployment: mask everything rather than
-      // leave the write-capable set visible.
-      return { filter: { deny: available }, key: `read-empty|${available.join(',')}` };
-    }
-    return { filter: { allow: readable }, key: `read|${readable.join(',')}` };
-  }
+  const policy = createToolPolicy({ ctx, allow, denied, sideChats, modeOf, isSideChat, reportUnmaskable });
+  const { attach, release, restrictionFor, allowedToolsFor, liveAgent, scheduleRestrictionRefresh } = policy;
+
+  const lifecycle = createLifecycle({
+    ctx,
+    sideChats,
+    isSideChat,
+    modeOf,
+    isBoundaryEvent,
+    allowedToolsFor,
+    attach,
+    release,
+    liveAgent,
+    scheduleRestrictionRefresh,
+  });
+  const readQuota = lifecycle.readQuota;
+  const currentStepKey = lifecycle.currentStepKey;
+  const injectBoundary = lifecycle.injectBoundary;
+  const forget = lifecycle.forget;
 
   /**
-   * Narrow the advertised tool schemas for one side-chat Agent, per its mode.
-   * The restriction is the authority: the guard is only a backstop for a tool
-   * registered after the last application.
-   * @param agent - live Agent whose Session is a side chat.
+   * The preset the main Session runs now. `header.agentPreset` is frozen at
+   * creation, so the registry projection is the only current answer; `null`
+   * means "no preset recorded" and is passed on as `undefined`.
+   * @param session - the main Session.
+   * @returns the preset id, or undefined when the Session records none.
    */
-  function attach(agent) {
-    const session = agent?.session;
-    if (session === undefined || session === null || !isSideChat(session)) return;
-    const mode = modeOf(session);
-    if (mode === 'full') {
-      release(session.id);
-      return;
-    }
-    let tools;
+  function currentPresetOf(session) {
     try {
-      tools = agent.ctx?.tools;
-    } catch {
-      // A context already inside teardown refuses service access.
-      return;
-    }
-    if (tools === undefined) return;
-    const plan = restrictionFor(mode, agent, tools);
-    if (plan === undefined) return;
-    const existing = attached.get(session.id);
-    if (existing !== undefined && existing.key === plan.key) return;
-    if (existing !== undefined) {
-      attached.delete(session.id);
-      try {
-        existing.dispose();
-      } catch {
-        /* the owning Agent context may already be gone */
+      const presets = ctx.get('agentPresets');
+      if (typeof presets?.presetForSession === 'function') {
+        const value = presets.presetForSession(session);
+        return value === null ? undefined : value;
       }
-    }
-    try {
-      const dispose = tools.restrict(plan.filter);
-      attached.set(session.id, { dispose: dispose, key: plan.key });
     } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot restrict tools for "${String(session.id)}": ${String(error)}`);
+      ctx.logger?.warn?.(`side-chat: cannot read the preset of "${String(session?.id)}": ${String(error)}`);
     }
-  }
-
-  /**
-   * @param sessionId - Session whose restriction is released.
-   */
-  function release(sessionId) {
-    const entry = attached.get(sessionId);
-    if (entry === undefined) return;
-    attached.delete(sessionId);
     try {
-      entry.dispose();
-    } catch {
-      /* the owning Agent context may already be gone */
+      const controller = ctx.get('sessionController');
+      if (typeof controller?.presetForSession === 'function') return controller.presetForSession(session);
+    } catch (error) {
+      ctx.logger?.warn?.(`side-chat: cannot read the preset of "${String(session?.id)}": ${String(error)}`);
     }
-  }
-
-  /**
-   * Re-apply every side chat's mask after the registry changed, so a tool
-   * registered later never appears in a restricted mode. `restrict()` itself
-   * emits `tools/change`, hence the queued single follow-up.
-   */
-  function refreshRestrictions() {
-    for (const sessionId of [...sideChats.keys()]) {
-      const agent = liveAgent(sessionId);
-      if (agent === undefined) continue;
-      try {
-        attach(agent);
-      } catch (error) {
-        ctx.logger?.warn?.(`side-chat: cannot refresh tools for "${sessionId}": ${String(error)}`);
-      }
-    }
-  }
-
-  /** Queue one restriction refresh; repeated requests in a tick coalesce. */
-  function scheduleRestrictionRefresh() {
-    if (toolsChangeQueued) return;
-    toolsChangeQueued = true;
-    queueMicrotask(() => {
-      toolsChangeQueued = false;
-      refreshRestrictions();
-    });
-  }
-
-  /** The live Agent for one Session, if the registry currently holds it. */
-  function liveAgent(sessionId) {
-    try {
-      return ctx.get('agents')?.get?.(sessionId);
-    } catch {
-      return undefined;
-    }
+    return session?.header?.agentPreset;
   }
 
   /**
@@ -629,47 +335,6 @@ export function apply(ctx, config = {}) {
       ctx.logger?.warn?.(`side-chat: preset composition unavailable: ${String(error)}`);
     }
     return { setup: () => undefined };
-  }
-
-  /**
-   * Threads whose boundary was already queued. `inject()` lands in the inbox,
-   * so a committed-log scan cannot see a second call before the first commits.
-   */
-  const boundaryQueued = new Set();
-
-  /**
-   * Queue the mode's boundary as a user-role context injection, exactly once
-   * per thread. It lands in `next-step`, which the opening step claims before
-   * the waking user message — so the boundary is the freshest instruction.
-   * @param agent - side-chat Agent about to run its first turn.
-   */
-  function injectBoundary(agent) {
-    const session = agent?.session;
-    if (session === undefined || !sideChats.has(session.id)) return;
-    if (boundaryQueued.has(session.id)) return;
-    let events;
-    try {
-      events = session.snapshotEvents();
-    } catch {
-      return;
-    }
-    for (const event of events) {
-      if (isBoundaryEvent(event)) {
-        boundaryQueued.add(session.id);
-        return;
-      }
-    }
-    try {
-      agent.inject({
-        id: randomUUID(),
-        role: 'user',
-        content: [{ type: 'text', text: `${BOUNDARY_HEAD}\n\n${MODE_BOUNDARY[modeOf(session)]}` }],
-        source: { kind: 'plugin:dsh-side-chat' },
-      });
-      boundaryQueued.add(session.id);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot queue the boundary for "${session.id}": ${String(error)}`);
-    }
   }
 
   /**
@@ -720,6 +385,12 @@ export function apply(ctx, config = {}) {
       return false;
     }
     if (path === undefined) return true;
+    // The backend files one Session per directory named after it, so a path that
+    // does not match that shape is not this thread's artifact and is left alone.
+    if (basename(dirname(path)) !== childId) {
+      ctx.logger?.warn?.(`side-chat: refusing to delete "${path}": it is not filed under "${childId}"`);
+      return false;
+    }
     try {
       await rm(path, { force: true });
     } catch (error) {
@@ -727,7 +398,6 @@ export function apply(ctx, config = {}) {
       return false;
     }
     const parent = dirname(path);
-    if (basename(parent) !== childId) return true;
     try {
       await rmdir(parent);
     } catch {
@@ -737,39 +407,80 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Close one side chat: dispose the Agent, then remove the artifact from disk.
-   * Nothing is archived and nothing is attached to a Workspace, so the thread
-   * cannot be found again in any list. The answer is honest: a failure throws
-   * so the Client can retry instead of reporting a close that did not happen.
+   * Whether one Session is a thread this plugin owns. A live Agent answers by its
+   * own durable mark; an adopted or resumed thread answers from its committed
+   * log, with the same test `sweepThreads` uses.
+   * @param childId - the Session id a control action names.
+   * @returns whether this plugin may dispose and delete it.
+   */
+  async function ownsThread(childId) {
+    if (sideChats.has(childId)) return true;
+    const agent = liveAgent(childId);
+    if (agent !== undefined) {
+      try {
+        if (isSideChat(agent.session)) return true;
+      } catch (error) {
+        ctx.logger?.warn?.(`side-chat: cannot classify "${childId}": ${String(error)}`);
+      }
+    }
+    const query = ctx.get('sessionQuery');
+    if (typeof query?.observeSession !== 'function') return false;
+    let observation;
+    try {
+      observation = await query.observeSession(childId);
+      const events = Array.isArray(observation?.events) ? observation.events : [];
+      return events.some((event) => isBoundaryEvent(event, childId));
+    } catch (error) {
+      ctx.logger?.warn?.(`side-chat: cannot read "${childId}" for ownership: ${String(error)}`);
+      return false;
+    } finally {
+      try {
+        observation?.[Symbol.dispose]?.();
+      } catch {
+        /* the observation is best-effort */
+      }
+    }
+  }
+
+  /**
+   * Close one side chat: prove the Session is a thread this plugin owns, dispose
+   * the Agent, then remove the artifact from disk. Nothing is archived and
+   * nothing is attached to a Workspace, so the thread cannot be found again in
+   * any list. The answer is honest: a refused close reports itself, a failed
+   * dispose keeps its teardown handle (so the retry can still finish) and leaves
+   * the log on disk.
    * @param payload - `{ childId }` from the Client half.
-   * @returns acknowledgement of an idempotent close.
+   * @returns acknowledgement of an idempotent close, or a refusal.
    */
   async function closeThread(payload) {
     const childId = typeof payload.childId === 'string' ? payload.childId : '';
     if (childId === '') throw new Error('缺少侧边对话标识');
+    if (!(await ownsThread(childId))) return { closed: false, reason: 'not-owned' };
     const entry = sideChats.get(childId);
-    sideChats.delete(childId);
-    boundaryQueued.delete(childId);
-    release(childId);
-    const failures = [];
-    if (typeof entry?.dispose === 'function') {
+    const live = liveAgent(childId);
+    const disposer =
+      typeof entry?.dispose === 'function' ? entry.dispose : live === undefined ? undefined : () => live.dispose();
+    if (disposer !== undefined) {
       try {
-        await entry.dispose();
+        await disposer();
       } catch (error) {
-        failures.push(`释放会话失败：${error instanceof Error ? error.message : String(error)}`);
+        // Keep the map entry: the Client retries, and the retry needs a handle.
+        throw new Error(`释放会话失败：${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const agent = liveAgent(childId);
-    if (agent !== undefined) {
+    sideChats.delete(childId);
+    forget(childId);
+    release(childId);
+    const remaining = liveAgent(childId);
+    if (remaining !== undefined) {
       try {
-        agent.cancel({ kind: 'user' }, { keepInbox: false });
+        remaining.cancel({ kind: 'user' }, { keepInbox: false });
       } catch (error) {
         ctx.logger?.warn?.(`side-chat: cancellation of "${childId}" failed: ${String(error)}`);
       }
     }
-    const removed = await discardArtifact(childId, entry?.cwd);
-    if (!removed) failures.push('删除会话文件失败');
-    if (failures.length > 0) throw new Error(failures.join('；'));
+    const removed = await discardArtifact(childId, entry?.cwd ?? remaining?.session?.header?.cwd);
+    if (!removed) throw new Error('删除会话文件失败');
     return { closed: true };
   }
 
@@ -862,9 +573,9 @@ export function apply(ctx, config = {}) {
     // The Host's newest committed seq is the only boundary that is true at the
     // instant this call runs; a Client-computed seq can lag the running turn.
     const atSeq = lastSeq;
-    const seed = buildSeed(events, atSeq);
+    const seed = buildSeed(events, atSeq, mode);
     const header = parentSession.header;
-    const composition = await compose(header.agentPreset);
+    const composition = await compose(currentPresetOf(parentSession));
     const defaults = ctx.get('agentDefaultModel')?.currentSelection?.() ?? {};
     const agentOptions = {};
     const provider = parent.options?.provider ?? defaults.provider;
@@ -892,7 +603,7 @@ export function apply(ctx, config = {}) {
       ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
       ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
     };
-    const entry = { mode: mode, parentId: parentId, cwd: header.cwd, dispose: undefined };
+    const entry = { mode: mode, cwd: header.cwd, dispose: undefined };
     sideChats.set(childId, entry);
     let handle;
     try {
@@ -963,7 +674,7 @@ export function apply(ctx, config = {}) {
           /* the observation is best-effort */
         }
       }
-      const mine = events.some((event) => isBoundaryEvent(event));
+      const mine = events.some((event) => isBoundaryEvent(event, id));
       if (!mine) continue;
       if (await discardArtifact(id, snapshot.header.cwd)) removed += 1;
       if (owns) {
@@ -982,66 +693,14 @@ export function apply(ctx, config = {}) {
       ctx.webServer.register({
         kind: 'prefix',
         path: ROUTE,
-        handler: async (req, res) => {
-          const connection = ctx.get('connection');
-          const rejection = typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : undefined;
-          if (rejection !== undefined) {
-            writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } });
-            return;
-          }
-          if (req.method !== 'POST') {
-            writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } });
-            return;
-          }
-          const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname;
-          const action = pathname.startsWith(`${ROUTE}/`) ? pathname.slice(ROUTE.length + 1) : '';
-          try {
-            const payload = await readJson(req);
-            if (action === 'open') {
-              writeJson(res, 200, { ok: true, value: await openThread(payload) });
-              return;
-            }
-            if (action === 'close') {
-              writeJson(res, 200, { ok: true, value: await closeThread(payload) });
-              return;
-            }
-            if (action === 'prompt') {
-              writeJson(res, 200, { ok: true, value: await promptThread(payload) });
-              return;
-            }
-            if (action === 'cancel') {
-              writeJson(res, 200, { ok: true, value: await cancelThread(payload) });
-              return;
-            }
-            if (action === 'model') {
-              writeJson(res, 200, { ok: true, value: await selectThreadModel(payload) });
-              return;
-            }
-            if (action === 'log') {
-              try {
-                appendFileSync(
-                  new URL('./.client-error.log', import.meta.url),
-                  `${new Date().toISOString()} ${String(payload.message ?? '')}\n${String(payload.stack ?? '')}\n\n`,
-                );
-              } catch {
-                /* diagnostics only */
-              }
-              writeJson(res, 200, { ok: true, value: { logged: true } });
-              return;
-            }
-            if (action === 'sweep') {
-              writeJson(res, 200, { ok: true, value: await sweepThreads(payload) });
-              return;
-            }
-            writeJson(res, 404, { ok: false, error: { code: 'not-found', message: `unknown side-chat action "${action}"` } });
-          } catch (error) {
-            const status = error instanceof BodyTooLargeError ? 413 : 500;
-            writeJson(res, status, {
-              ok: false,
-              error: { code: status === 413 ? 'request-too-large' : 'side-chat-error', message: error instanceof Error ? error.message : String(error) },
-            });
-          }
-        },
+        handler: createRouteHandler(ctx, {
+          open: openThread,
+          close: closeThread,
+          prompt: promptThread,
+          cancel: cancelThread,
+          model: selectThreadModel,
+          sweep: sweepThreads,
+        }),
       }),
     'side-chat: control route',
   );
@@ -1056,23 +715,44 @@ export function apply(ctx, config = {}) {
       order: 1e6,
       text: (context) => {
         const agent = context?.agent;
-        return agent !== undefined && isSideChat(agent.session) ? MODE_SECTION[modeOf(agent.session)] : '';
+        if (agent === undefined || !isSideChat(agent.session)) return '';
+        const mode = modeOf(agent.session);
+        return sectionText(mode, allowedToolsFor(agent, mode));
       },
     });
     const disposeGuard = ctx.tools.guard((execution) => {
       const agent = execution.agent;
       if (agent === undefined || !isSideChat(agent.session)) return undefined;
-      const mode = modeOf(agent.session);
+      const session = agent.session;
+      const mode = modeOf(session);
       if (mode === 'full') return undefined;
       const name = execution.name;
-      if (mode === 'read' && allow.has(name) && !denied(name)) return undefined;
-      // Backstop only: the restriction should already have removed the tool.
-      // A tool registered after the last application lands here once, and the
-      // queued pass narrows it before the next step.
-      scheduleRestrictionRefresh();
-      return mode === 'reply'
-        ? `侧边对话是「只回复」模式：本会话没有可用工具（${name} 不在其中）。请直接基于继承的上下文回答。`
-        : `侧边对话为只读：本会话没有写入能力（${name} 不在其中）。请说明需要该操作，或让用户回主会话执行。`;
+      let tools;
+      try {
+        tools = agent.ctx?.tools;
+      } catch {
+        /* a context inside teardown refuses service access */
+        return undefined;
+      }
+      const plan = tools === undefined ? undefined : restrictionFor(mode, agent, tools);
+      // The closed list is the guard's authority, so a mask that could not be
+      // applied never turns into a silent allow.
+      if (plan === undefined) return DENIAL.unreadable(mode);
+      if (plan.unmaskable.has(name)) {
+        reportUnmaskable(session.id, name);
+        return DENIAL.unmaskable(name);
+      }
+      if (!plan.allowed.includes(name)) {
+        // Backstop only: the restriction should already have removed the tool.
+        scheduleRestrictionRefresh();
+        return DENIAL.denied(mode, name);
+      }
+      const key = currentStepKey(session);
+      const used = readQuota.get(session.id);
+      const count = used !== undefined && used.key === key ? used.count : 0;
+      if (count >= 1) return DENIAL.quota;
+      readQuota.set(session.id, { key: key, count: count + 1 });
+      return undefined;
     });
     return () => {
       disposeGuard();
@@ -1081,16 +761,11 @@ export function apply(ctx, config = {}) {
   }, 'side-chat: read-only stance');
 
   /**
-   * Tool sections that stay in read-only mode: one usage paragraph per visible
-   * read tool. Every other `tool:*` section belongs to a masked tool.
-   */
-  const READ_SECTION_KEEP = new Set(['tool:read', 'tool:glob', 'tool:grep', 'tool:web_search', 'tool:web_fetch']);
-
-  /**
    * Tool usage paragraphs are registered globally by their owning plugins and
    * are not filtered by the Agent's visible tool set. Drop the ones whose tool
    * this side chat cannot call, so the prompt never describes a tool that the
-   * request does not advertise.
+   * request does not advertise. The kept set is derived from the same closed
+   * list the mask and the mode text use, never from a hand-written list.
    */
   ctx.on(
     'system-prompt/assemble',
@@ -1107,10 +782,12 @@ export function apply(ctx, config = {}) {
       if (result === undefined || result === null) return result;
       const mode = modeOf(agent.session);
       if (mode === 'full' || !Array.isArray(result.sections)) return result;
+      const keep = sectionKeep(mode, allowedToolsFor(agent, mode));
+      if (keep === undefined) return result;
       const sections = result.sections.filter((section) => {
         const name = typeof section?.name === 'string' ? section.name : '';
         if (!name.startsWith('tool:')) return true;
-        return mode === 'read' && READ_SECTION_KEEP.has(name);
+        return keep.has(name);
       });
       if (sections.length === result.sections.length) return result;
       return { ...result, sections: sections };
@@ -1118,48 +795,5 @@ export function apply(ctx, config = {}) {
     { prepend: true },
   );
 
-  ctx.on('tools/change', () => {
-    scheduleRestrictionRefresh();
-  });
-
-  ctx.on('agent/created', ({ agent }) => {
-    // A listener failure would fail the publication of an unrelated Agent.
-    try {
-      attach(agent);
-      // A cold-resumed side chat publishes its Agent right before the waking
-      // prompt is delivered, so the boundary still lands first.
-      injectBoundary(agent);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot prepare "${String(agent?.id)}": ${String(error)}`);
-    }
-  });
-
-  ctx.on('agent/disposed', ({ agent }) => {
-    const sessionId = agent?.session?.id ?? agent?.id;
-    if (sessionId === undefined) return;
-    release(sessionId);
-    boundaryQueued.delete(sessionId);
-  });
-
-  ctx.on('session/event', (session, event) => {
-    // The boundary is the durable ownership mark: as soon as it commits, the
-    // thread is a side chat, even if this process lost its map entry.
-    if (event.type !== 'user/message' || event.data?.source?.kind !== 'plugin:dsh-side-chat') return;
-    try {
-      const agent = liveAgent(session.id);
-      if (agent !== undefined) attach(agent);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot attach "${String(session?.id)}": ${String(error)}`);
-    }
-  });
-
-  // Reconcile Agents that were live before this plugin (re)loaded.
-  for (const agent of ctx.get('agents')?.list?.() ?? []) {
-    try {
-      attach(agent);
-      injectBoundary(agent);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot reconcile "${String(agent?.id)}": ${String(error)}`);
-    }
-  }
+  lifecycle.install();
 }
