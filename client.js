@@ -129,7 +129,9 @@ window.__ModuleLoader__.load({
       'button.tooltip': '在右侧栏打开侧边对话（继承本会话上下文）',
       'launcher.opening': '正在打开侧边对话…',
       'status.snapshot': '上下文截至 {time}',
-      'status.snapshotMode': '{mode} · 上下文截至 {time}',
+      'status.mode.trigger': '切换模式',
+      'status.mode.help': '就地切换模式：同一个会话、同一份上下文，不新开、不丢',
+      'status.switching': '切换中…',
       'status.running': '主会话仍在运行',
       'status.sync': '以最新快照新开',
       'status.syncHint': '用主会话的最新快照新开一条，并关闭当前侧边对话',
@@ -153,6 +155,7 @@ window.__ModuleLoader__.load({
       'error.noContext': '主会话还没有可继承的内容',
       'error.io': '文件操作失败，可稍后重试',
       'error.offline': '无法连接宿主，请稍后重试',
+      'error.staleHost': '宿主还是旧版本：重载插件或重启 DSH 后再切换',
       'error.unknown': '操作失败',
     };
     const en = {
@@ -179,7 +182,9 @@ window.__ModuleLoader__.load({
       'button.tooltip': 'Open a side chat in the right sidebar (inherits this conversation)',
       'launcher.opening': 'Opening the side chat…',
       'status.snapshot': 'Context as of {time}',
-      'status.snapshotMode': '{mode} · context as of {time}',
+      'status.mode.trigger': 'Switch mode',
+      'status.mode.help': 'Switch the mode in place: same chat, same context — nothing new, nothing lost',
+      'status.switching': 'Switching…',
       'status.running': 'Main conversation running',
       'status.sync': 'Open a fresh snapshot',
       'status.syncHint': 'Opens a new side chat from the latest snapshot and closes this one',
@@ -203,6 +208,7 @@ window.__ModuleLoader__.load({
       'error.noContext': 'The main conversation has nothing to inherit yet',
       'error.io': 'A file operation failed; retrying later may work',
       'error.offline': 'The host is unreachable; retrying later may work',
+      'error.staleHost': 'The host still runs the old build: reload the plugin or restart DSH, then switch again',
       'error.unknown': 'The action failed',
     };
 
@@ -226,6 +232,12 @@ window.__ModuleLoader__.load({
       '.dsh-side-chat-link { border: 0; background: 0 0; padding: 1px 5px; border-radius: 4px; color: var(--dsw-alias-brand-primary); font: inherit; cursor: pointer; }',
       '.dsh-side-chat-link:hover { background: var(--dsw-alias-bg-layer-2); }',
       '.dsh-side-chat-link:disabled { color: var(--dsw-alias-label-secondary); cursor: default; }',
+      '.dsh-side-chat-status-mode { flex: none; display: inline-flex; align-items: center; }',
+      /* One shared-kit button, tightened to an 11px status row: metrics only, so
+         the colour, radius, hover and focus ring still come from the component. */
+      '.dsh-side-chat-status .dsh-side-chat-status-trigger { flex: none; height: 18px; min-height: 18px; padding: 0 6px; gap: 3px; font-size: 11px; line-height: 16px; }',
+      '.dsh-side-chat-status-trigger svg { width: 12px; height: 12px; }',
+      '.dsh-side-chat-status-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; }',
       /* --- header button --- */
       '.dsh-side-chat-button { border: 0; background: 0 0; padding: 6px; border-radius: 6px; color: var(--dsw-alias-label-secondary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }',
       '.dsh-side-chat-button:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }',
@@ -417,6 +429,9 @@ window.__ModuleLoader__.load({
       'side-chat/io': 'error.io',
       'side-chat/offline': 'error.offline',
       'side-chat/retain-pending': 'error.pending',
+      // The route this page calls is not in the running Host: it still runs the
+      // build from before the action existed (or before a reload).
+      'side-chat/not-found': 'error.staleHost',
     };
 
     /**
@@ -1024,11 +1039,22 @@ window.__ModuleLoader__.load({
 
       const openResource = (address) => ctx.sidebarRight.openResource(address, { kind: CHAT_KIND });
 
+      /**
+       * Threads this page is re-addressing right now. `replaceTab` closes the tab
+       * it replaces and runs the close handler for it in the same tick, so a mode
+       * switch would dispose and delete the very thread its new address points
+       * at. The set is only non-empty while that synchronous open runs.
+       */
+      const reAddressed = new Set();
+
       ctx.effect(
         () =>
           ctx.sidebarRight.registerCloseHandler(CHAT_KIND, (sessionId, tab) => {
             const parsed = parseSideChatAddress(tab && tab.contentId);
             if (parsed === undefined) return;
+            // The tab closes to make room for the same thread at its new address:
+            // the thread itself stays, so nothing here may dispose it.
+            if (reAddressed.has(parsed.childId)) return;
             forget(parsed.parentId, parsed.childId);
             clearLive(parsed.childId);
             void closeSide(parsed.childId, parsed.parentId);
@@ -1180,14 +1206,92 @@ window.__ModuleLoader__.load({
         const failureState = useState('');
         const failure = failureState[0];
         const setFailure = failureState[1];
+        // Shared UI kit; anything missing degrades to the local menu below. The
+        // tooltip is an extra rather than a requirement: a kit without it keeps
+        // its menu and button and falls back to the plain `title` hint.
+        const kit = primitivesModule() ?? null;
+        const Menu = kit !== null ? kit.Menu : LocalMenu;
+        const Button = kit !== null ? kit.Button : null;
+        const Chevron = kit !== null ? kit.IconChevronDownOutlineRegular : LocalChevron;
+        const Tooltip = kit !== null && isComponentType(kit.Tooltip) ? kit.Tooltip : null;
+        const modeState = useState(false);
+        const modeOpen = modeState[0];
+        const setModeOpen = modeState[1];
+        const switchingState = useState(false);
+        const switching = switchingState[0];
+        const setSwitching = switchingState[1];
+        /** Synchronous guard: two menu picks in one tick both read `false`. */
+        const switchingRef = useRef(false);
+        const switchFailureState = useState('');
+        const switchFailure = switchFailureState[0];
+        const setSwitchFailure = switchFailureState[1];
         const when = parsed.at === undefined ? '' : new Date(parsed.at).toLocaleString();
         // The mode is recorded in the address the Host answered with, so an old
-        // tab restored without one simply omits the prefix instead of guessing.
-        const modeLabel = parsed.mode === undefined ? '' : t('mode.' + parsed.mode);
+        // tab restored without one omits the control instead of guessing.
+        const recordedMode = parsed.mode;
         const snapshotText =
-          modeLabel === ''
+          recordedMode === undefined
             ? t('status.snapshot', { time: when })
-            : t('status.snapshotMode', { mode: modeLabel, time: when });
+            : '· ' + t('status.snapshot', { time: when });
+
+        /**
+         * Switch this thread's mode in place. The Host keeps the thread and its
+         * Agent; this page only replaces the address it renders, which is what
+         * puts the recorded mode back in step and keeps the tab's own body. The
+         * thread is re-registered as live first: a tab body closes a thread it
+         * does not consider live in this page lifetime.
+         * @param choice - one of {@link MODES}.
+         */
+        const switchMode = (choice) => {
+          setModeOpen(false);
+          if (switchingRef.current) return;
+          const target = normalizeMode(choice);
+          if (target === recordedMode) return;
+          switchingRef.current = true;
+          setSwitching(true);
+          setSwitchFailure('');
+          void (async () => {
+            try {
+              const result = await callHost('mode', { childId: parsed.childId, mode: target });
+              const confirmed =
+                result !== undefined && typeof result.mode === 'string' ? normalizeMode(result.mode) : target;
+              // The Host reports no change for a mode it already had: the tab is
+              // left alone instead of being re-rendered for nothing.
+              if (confirmed === recordedMode) return;
+              const address = sideChatAddress(
+                parsed.childId,
+                parsed.parentId,
+                parsed.atSeq,
+                parsed.at,
+                confirmed,
+                parsed.label,
+              );
+              writeLive(parsed.childId);
+              remember(parsed.parentId, parsed.childId, address);
+              const actions = tab && tab.actions;
+              if (actions !== undefined && typeof actions.openResource === 'function') {
+                // `replaceTab` closes this tab before the new address lands, and the
+                // sidebar runs the close handler inside that call: the guard keeps
+                // the thread alive across the swap.
+                reAddressed.add(parsed.childId);
+                try {
+                  actions.openResource(address, { kind: CHAT_KIND, replaceTab: true });
+                } finally {
+                  reAddressed.delete(parsed.childId);
+                }
+              } else {
+                openResource(address);
+              }
+            } catch (error) {
+              console.warn('side-chat: the mode switch failed', error);
+              setSwitchFailure(errorText(error, 'error.unknown'));
+              window.setTimeout(() => setSwitchFailure(''), 4000);
+            } finally {
+              switchingRef.current = false;
+              setSwitching(false);
+            }
+          })();
+        };
         const sync = () => {
           if (phase === 'busy') return;
           setPhase('busy');
@@ -1230,10 +1334,84 @@ window.__ModuleLoader__.load({
             }
           })();
         };
+        /**
+         * One status-bar action. The shared button and its tooltip are used when
+         * the kit ships them, so the control looks and dismisses like every other
+         * DSH control; without the kit the plain link and its `title` hint stay.
+         * @param attributes - native button props: aria, disabled, onClick.
+         * @param hint - the sentence the hover bubble shows.
+         * @param label - the button's own text.
+         * @param icon - optional glyph, in the kit's own icon slot.
+         * @returns the button, wrapped in the kit's tooltip when it has one.
+         */
+        const actionButton = (attributes, hint, label, icon) => {
+          const element =
+            Button === null
+              ? h(
+                  'button',
+                  {
+                    ...attributes,
+                    type: 'button',
+                    className: 'dsh-side-chat-link dsh-side-chat-status-trigger',
+                    title: hint,
+                  },
+                  label,
+                  icon,
+                )
+              : h(
+                  Button,
+                  {
+                    ...attributes,
+                    variant: 'ghost',
+                    size: 'sm',
+                    className: 'dsh-side-chat-status-trigger',
+                    ...(icon === undefined ? {} : { icon: icon }),
+                  },
+                  label,
+                );
+          return Tooltip === null
+            ? element
+            : h(Tooltip, { label: hint, side: 'bottom', delayMs: 200, portal: true }, element);
+        };
         return h(
           'div',
           { className: 'dsh-side-chat-status' },
+          recordedMode === undefined
+            ? null
+            : h(
+                'span',
+                { className: 'dsh-side-chat-status-mode' },
+                h(Menu, {
+                  open: modeOpen,
+                  portal: true,
+                  autoFocus: true,
+                  align: 'start',
+                  items: MODES.map((candidate) => ({ id: candidate, label: t('mode.' + candidate) })),
+                  selectedId: recordedMode,
+                  onClose: () => setModeOpen(false),
+                  onSelect: switchMode,
+                  anchor: actionButton(
+                    {
+                      'aria-label': t('status.mode.trigger'),
+                      'aria-haspopup': 'menu',
+                      'aria-expanded': modeOpen,
+                      disabled: switching,
+                      onClick: () => setModeOpen((value) => !value),
+                    },
+                    t('status.mode.help'),
+                    t('mode.' + recordedMode),
+                    h(Chevron, {}),
+                  ),
+                }),
+              ),
           h('span', { className: 'dsh-side-chat-status-label' }, snapshotText),
+          switching ? h('span', {}, t('status.switching')) : null,
+          // The failure has to land next to the mode control, not past the
+          // spacer: that is where the user just clicked, and that is the only
+          // place a clipped 11px row still shows it.
+          switchFailure === ''
+            ? null
+            : h('span', { className: 'dsh-side-chat-failure dsh-side-chat-status-note' }, switchFailure),
           running ? h('span', {}, '· ' + t('status.running')) : null,
           h('span', { className: 'dsh-side-chat-status-spacer' }),
           phase === 'latest' ? h('span', {}, t('status.latest')) : null,
@@ -1241,15 +1419,9 @@ window.__ModuleLoader__.load({
           phase === 'failed'
             ? h('span', { className: 'dsh-side-chat-failure' }, t('status.failed') + (failure === '' ? '' : '：' + failure))
             : null,
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-side-chat-link',
-              title: t('status.syncHint'),
-              disabled: phase === 'busy',
-              onClick: sync,
-            },
+          actionButton(
+            { 'aria-label': t('status.sync'), disabled: phase === 'busy', onClick: sync },
+            t('status.syncHint'),
             phase === 'busy' ? t('status.syncing') : t('status.sync'),
           ),
         );

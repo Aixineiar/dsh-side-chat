@@ -121,9 +121,11 @@ The bundle's own [`cordis.patch.yml`](cordis.patch.yml) already carries that row
 
 ## Usage
 
-Two entry points (tool panel card, conversation header button). Inside the tab: the header shows「上下文截至 <time>」and a「以最新快照新开」action (opens a fresh snapshot and closes the current side chat); the composer has its own model picker that does not touch the global default; the stop button cancels the running turn.
+Two entry points (tool panel card, conversation header button). Both the header button and the default mode of a new side chat are page settings on the plugin's own page (`localStorage`, no restart; the header entry registers and unregisters from the same change). Inside the tab the status bar shows the mode chip and「上下文截至 <time>」plus a「以最新快照新开」action (opens a fresh snapshot and closes the current side chat); the composer has its own model picker that does not touch the global default; the stop button cancels the running turn.
 
 The mode menu beside the card title picks the mode for a **new** side chat: choosing one opens a new tab and closes the current one, so the old conversation (and everything it produced) is discarded. The card subtitle says so while the menu is open.
+
+The mode chip on the tab's status bar switches **in place**: same agent, same log, same conversation, nothing opened or closed. It takes effect on the next request (the tool list is re-declared and the host's own tool-change notice counts the additions and removals), and every switch permanently adds two user-role messages to that thread — a one-line「从 X 切到 Y」notice followed by the new mode's explanation. Switching to the mode the thread already has queues nothing. A tab restored from an older build without a recorded mode shows no chip and keeps the plain line instead of guessing.
 
 **Closing the tab deletes the side chat** — agent disposed, log file and directory removed. A boot sweep cleans up leftovers from crashes. If the dispose or the deletion fails, the thread is deliberately kept and the card offers「重试关闭」for exactly those threads.
 
@@ -131,7 +133,7 @@ While it lives, a side chat is an ordinary catalog entry titled「侧边 · <mai
 
 ## Development
 
-No build step (ESM, no TypeScript, no bundler). `npm test` runs two suites: `dev/boot-sim.mjs` (185 assertions over both halves) and `node --test dev/` (10 interaction-level Client assertions, driven through the registered surfaces rather than private helpers). See [CONTRIBUTING.md](CONTRIBUTING.md).
+No build step (ESM, no TypeScript, no bundler). `npm test` runs two suites: `dev/boot-sim.mjs` (220 assertions over both halves) and `node --test dev/` (16 interaction-level Client assertions, driven through the registered surfaces rather than private helpers). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Compatibility
 
@@ -141,7 +143,7 @@ Validated on DSH **0.2.2-rc.3** only. The host contracts this plugin actually us
 
 `engines.dsh` only decides whether the package can be installed; this table is what to re-check when the host moves. An earlier build carried fallbacks for `sessionController.composeAgent`, `sessionController.presetForSession` and `sessionPersistence.locate`: the first two belong to the controller's internal agent controller rather than the `sessionController` service, and the third is a jsonl-backend extra rather than a `SessionPersistence` contract member — none of them could ever run.
 
-Known limits: the read quota is per *step*, not per answer; the side chat does not follow the main session after opening; closing is irreversible; the mode is fixed when the thread is created (switching opens a new one); the control route accepts text parts and already-admitted attachment references only; a thread that could not be closed stays visible on the card with a retry; threads parked in the archive by older builds are cleaned up at boot; the client half is a single file because the DSH client loader cannot synchronously require sibling `client*.js` files.
+Known limits: the read quota is per *step*, not per answer; the side chat does not follow the main session after opening; closing is irreversible; a mode switch leaves two permanent user-role messages in the thread and the in-flight step keeps the system section it was assembled with (the tool mask and the guard change immediately); choosing a mode on the guide card still opens a new thread; the control route accepts text parts and already-admitted attachment references only; a thread that could not be closed stays visible on the card with a retry; threads parked in the archive by older builds are cleaned up at boot; the client half is a single file because the DSH client loader cannot synchronously require sibling `client*.js` files.
 
 ## Security
 

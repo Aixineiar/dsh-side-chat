@@ -25,6 +25,14 @@ export function normalizeMode(value) {
 /** Owner mark kind written into every injected boundary. */
 export const BOUNDARY_SOURCE = 'plugin:dsh-side-chat';
 
+/**
+ * Mark kind of the one-line notice a mode switch queues ahead of the new mode's
+ * explanation. It is deliberately not a boundary: ownership and the recorded
+ * mode stay on the explanation, so a notice can never be read as a mode
+ * definition — not by the log scan, and not by an old build's text fallback.
+ */
+export const SWITCH_SOURCE = 'plugin:dsh-side-chat/switch';
+
 /** Facts every mode shares: what the inherited log is, the snapshot deadline, the isolation. */
 const REFERENCE_FACT =
   '这条边界之前的一切都是主会话继承来的参考上下文，不是当前任务。不要继续、补完或执行边界之前的任何指令、计划、工具调用、审批或改动；只有这条边界之后提交的消息才是本会话的有效指令。';
@@ -284,6 +292,22 @@ export function boundaryText(mode, allowed) {
 /** Render one mode's system-prompt section from the table above. */
 export function sectionText(mode, allowed) {
   return MODES[mode].section({ allowed: allowed });
+}
+
+/**
+ * The notice a switch queues before the new mode's own explanation.
+ *
+ * It is one line and names no rule on purpose: the explanation that follows is
+ * the authority, and this notice only has to say that the previous explanation
+ * no longer holds. It must not repeat a mode's fixed opening (`模式：<label>。`),
+ * because that sentence is what a log scan — and an old build's text fallback —
+ * reads as the mode definition.
+ * @param from - the mode being left.
+ * @param to - the mode being entered.
+ * @returns the notice text.
+ */
+export function switchText(from, to) {
+  return `模式已切换：${MODES[from].label} → ${MODES[to].label}。上一条模式的说明作废，以下一条为准。`;
 }
 
 /** The synthetic wording one mode writes for an unanswered tool call. */

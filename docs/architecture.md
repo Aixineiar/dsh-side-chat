@@ -104,7 +104,8 @@ A denial is a plain string; the host renders it as `Error: <reason>` in a tool r
 
 - **Boundary message** — a user-role message injected once per thread through `agent.inject`, so it
   lands in the inbox and is claimed by the opening step *before* the waking user message. Its
-  `source` carries `{ kind: 'plugin:dsh-side-chat', childId, mode }`.
+  `source` carries `{ kind: 'plugin:dsh-side-chat', childId, mode }`. A mode switch re-runs the same
+  generator and appends another one; the **newest** explanation is the one that governs.
 - **System-prompt section** — `systemPrompt.section({ name: 'side-chat:policy', order: 1e6 })`. The
   high order is deliberate: it must be the last word, after the inherited general rules it settles.
 - **No paragraph pruning** — a hosting package registers its `tool:*` section with a scope-aware text
@@ -112,6 +113,32 @@ A denial is a plain string; the host renders it as `Error: <reason>` in a tool r
   drops empty sections, so a tool the mask removed has no paragraph for that Agent already. This
   plugin therefore never listens to `system-prompt/assemble`: rewriting that waterfall would delete
   other plugins' contributions and could not make the prompt more correct.
+
+### 3.4 Mode switching
+
+`POST /mode` switches a live thread without touching it: same Agent, same log, no fork, no close.
+
+1. `switchThreadMode` validates `childId` **and** the mode id (an unknown id is a 400, never a silent
+   fallback to `read`), then requires a live Agent (409) and proven ownership (403). Both refusals
+   return before anything is written.
+2. The mode the thread already has is a no-op (`{ switched: false, unchanged: true }`): a repeated
+   pick must not append a pair of messages to a context the user already paid for.
+3. The map entry is updated, `attach(agent)` re-applies the mask **first** (so the closed list the new
+   explanation renders is the list that mask leaves), the read quota entry is dropped, and only then
+   are the messages queued.
+4. The queue is a pair, in this order:
+   - the notice — one line, mark `plugin:dsh-side-chat/switch`, `switchText(from, to)`. It is not a
+     boundary: no owner identity, no mode, and its wording avoids the `模式：<label>。` opening that a
+     log scan (and an older build's text fallback) reads as a mode definition;
+   - the explanation — the same generator the opening boundary uses, mark
+     `plugin:dsh-side-chat`, carrying `{ childId, mode }`.
+
+Both land in `next-step` (`agent.inject` does not wake the Agent), and one step claims the whole
+list in order, so the explanation is always the later word. Sequence matters for exactly that
+reason; a pair written the other way round would let the model read a superseded mode.
+
+`tools/change` therefore fires from a real mask change, and the host's own request-header diff
+renders its tool-update notice (「新增 N 个，移除 M 个」) — this plugin never draws that itself.
 
 ---
 
@@ -165,14 +192,19 @@ recorded, so closing the tab still disposes it instead of deleting a log out fro
 
 `modeOf(session)` prefers the in-process map; otherwise it recovers from the log:
 
-1. the thread's **own** mark (`childId === session.id`) wins — it also carries `mode`;
-2. a mark **without** `childId` speaks for the log only when it is the log's single mark; two of them
-   are ambiguous and the read-only default is used instead of a guess;
-3. older logs (no structured `mode`) fall back to matching the mode heading in the boundary text;
+1. the thread's **own** explanations (`childId === session.id`) win — they also carry `mode` — and the
+   **newest** one wins, because a switch appends rather than rewrites;
+2. a mark **without** `childId` speaks for the log only when it is the log's single mode record; two of
+   them are ambiguous and the read-only default is used instead of a guess;
+3. older logs (no structured `mode`) fall back to matching the mode heading in the explanation text; a
+   mark that records no mode at all is skipped, so a switch notice can never win an argument;
 4. anything else → `DEFAULT_MODE` (`read`).
 
 The result is remembered per log length, so a guess made before this thread's own boundary committed
 cannot outlive that commit.
+
+A thread that survives a plugin reload therefore comes back in the mode of its **last** switch, and
+`injectBoundary` finds a mark already in the log and appends none — recovery never re-injects.
 
 ---
 
@@ -185,6 +217,7 @@ cannot outlive that commit.
 | `slots.inject('conversation.session.header.utilities', …)` | the header button |
 | `slots.inject('sidebar.right.tab.guide.entry', …)` | the tool-panel card (title + live mode line) |
 | `slots.inject('sidebar.right.pane.tab', …)` ×2 | the chat tab and the launcher tab |
+| `slots.inject('plugins.bundle.config', { key: <package name> })` | the plugin page's settings form |
 | `sidebarRightTabs.register` ×2 | tab kinds `sidechat` and `sidechat-launcher` |
 | `resources.register` | serves the tab body through the resource protocol |
 | `sidebarRight.registerCloseHandler` | closing the tab calls `/close` |
@@ -192,6 +225,27 @@ cannot outlive that commit.
 It is a single file because the client loader resolves `require` only for platform-seeded modules and
 already-registered factories; it cannot synchronously require a sibling `client*.js`, and those chunk
 files are compiler output this project does not have.
+
+The plugin page form (`plugins.bundle.config`) is client-only state:
+`localStorage['dsh.side-chat.settings']` read through `useSyncExternalStore`, with the header button
+registered and disposed from the same change. Nothing about it reaches the host, which is the point —
+a host-side settings edit would restart the plugin and dispose every live side chat. The form renders
+the shared kit's `Switch` and `SegmentedControl` when the kit is complete and plain controls otherwise.
+
+**Switching from the status bar.** The chip renders the mode recorded in the tab's address and opens
+the same three-mode menu. A pick calls `/mode`, then re-addresses this tab to the address carrying the
+new mode, so the address on screen is the mode the host is enforcing. Two host facts shape that:
+
+- `openResource(address, { replaceTab: true })` **closes this tab and runs the registered close
+  handler inside the same call** — and that handler disposes the Agent and deletes its log, i.e. the
+  very thread the new address names. The open is therefore wrapped in a `reAddressed` guard the handler
+  checks; the guard is cleared right after the synchronous call, so an ordinary close still disposes.
+- the tab body closes a thread it does not consider live in this page lifetime, so `writeLive(childId)`
+  runs before the address changes.
+
+`remember(parentId, childId, address)` keeps the sidebar's own record in step, and a repeated pick of
+the current mode sends nothing: the client short-circuits before the round trip, and the host answers
+`switched: false` anyway.
 
 The composer keeps a `ClientSessionReference` per side chat (the session controller's `retain`), so
 sending, stopping and model selection go through the same code path as a normal session — except the
@@ -230,10 +284,14 @@ original methods and never clobbers a wrapper installed after ours.
 | `workspaceRegistry.archivedSessionIds` / `unarchiveSession` | cleaning up threads older builds archived |
 | `connection.requestRejection(req)` | route authentication |
 | `llm.resolveCallConfig` | validating a model choice before recording it |
+| `agent.inject(message)` → the inbox's `next-step`, claimed in order by one step | the boundary and the switch pair |
+| `agent.followup` / `agent.steer` / `agent.cancel` / `agent.model.select` | driving a thread without the subagent runtime |
 
 Client side: `sessions.retain/refresh/using/list`, `resources.register` (an async generator per
 address), `sidebarRightTabs.register`, `sidebarRight.openResource/registerCloseHandler`,
-`slots.register/inject`, `locale.register/bind`.
+`slots.register/inject`, `locale.register/bind`, and
+`sidebarRightTabActions.openResource(address, { replaceTab })` — which closes the replaced tab and runs
+the close handler synchronously, so re-addressing a live thread needs the guard described in §7.
 
 `dev/boot-sim.mjs` stubs every Host contract above, and `dev/client-logic.test.mjs` stubs the Client
 ones through `dev/harness.mjs`. That is exactly why their assertions are about *this plugin's*
@@ -247,7 +305,8 @@ invariants (does the rendered list equal the applied mask? does a malformed prom
 **A new mode.** Add an entry to `MODES` in `prompt.js` (`boundary`, `section`, `synthetic`), add its id
 to `MODE_IDS`, teach `tools.restrictionFor` what to mask, add the label to both locales, and add the id
 to `MODES` in `client.js`. `dev/boot-sim.mjs` fails until the two lists and the default agree; its
-per-mode loop picks the new mode up automatically.
+per-mode loop picks the new mode up automatically. Switching needs nothing extra: `switchText` renders
+the transition from the same table, and the notice/explanation pair is generic.
 
 **A new read-only tool.** Append it to `READ_ALLOW` in `index.js` and stop there: the mask decides what
 the request carries, and the host renders the tool's own paragraph per scope.

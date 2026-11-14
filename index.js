@@ -41,7 +41,7 @@ import { basename, dirname } from 'node:path';
 import { rm, rmdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
-import { BOUNDARY_SOURCE, DEFAULT_MODE, DENIAL, normalizeMode, sectionText } from './prompt.js';
+import { BOUNDARY_SOURCE, DEFAULT_MODE, DENIAL, MODE_IDS, normalizeMode, sectionText } from './prompt.js';
 import { buildSeed } from './seed.js';
 import { createToolPolicy } from './tools.js';
 import { createRouteHandler, ERROR, ROUTE, SideChatError } from './routes.js';
@@ -204,15 +204,19 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Read the mode out of the boundary this plugin injected. This thread's own
-   * boundary wins over one inherited from a parent side chat — a nested side
-   * chat copies its parent's log, mode message included. A mark written before
-   * the boundary carried its thread id cannot be attributed from its content
-   * alone, so it speaks for the log only when it is the log's single mark;
-   * several of them are ambiguous, and the read-only default is the safe answer
-   * instead of a guessed mode that would then govern the tool mask. The answer
-   * is remembered per log length: a mark that is not this thread's own must not
-   * survive a later commit of this thread's own boundary.
+   * Read the mode out of the explanations this plugin injected. This thread's
+   * own explanations win over one inherited from a parent side chat — a nested
+   * side chat copies its parent's log, mode message included — and the newest of
+   * them wins, because a switch appends a fresh explanation instead of editing
+   * the one the thread was opened with. A boundary that records no mode says
+   * nothing about the mode, so it neither competes nor makes the answer
+   * ambiguous. A mark written before the boundary carried its thread id cannot be
+   * attributed from its content alone, so it speaks for the log only when it is
+   * the log's single mode record; several of them are ambiguous, and the
+   * read-only default is the safe answer instead of a guessed mode that would
+   * then govern the tool mask. The answer is remembered per log length: a mark
+   * that is not this thread's own must not survive a later commit of this
+   * thread's own boundary.
    * @param session - side-chat Session without a live map entry.
    * @returns the recorded mode, or the read-only default.
    */
@@ -221,27 +225,26 @@ export function apply(ctx, config = {}) {
     if (cached !== undefined && cached.seq === session.seq) return cached.mode;
     let own;
     let inherited;
-    let marks = 0;
-    let unattributed = 0;
+    let records = 0;
+    let candidates = 0;
     try {
       for (const event of session.snapshotEvents()) {
         const owner = boundaryOwner(event);
         if (owner === undefined) continue;
-        marks += 1;
         const recorded = modeNamedBy(owner, event);
-        if (owner.childId === session.id) {
-          own = recorded;
-          if (own !== undefined) break;
-        } else if (owner.childId === undefined) {
+        if (recorded === undefined) continue;
+        records += 1;
+        if (owner.childId === session.id) own = recorded;
+        else if (owner.childId === undefined) {
           if (inherited === undefined) inherited = recorded;
-          unattributed += 1;
+          candidates += 1;
         }
       }
     } catch (error) {
       ctx.logger?.warn?.(`side-chat: cannot recover the mode of "${String(session.id)}": ${String(error)}`);
     }
-    // Only a log whose every mark is unattributed has one candidate owner.
-    const guess = unattributed <= 1 && marks === unattributed ? inherited : undefined;
+    // Only a log whose every mode record is unattributed has one candidate owner.
+    const guess = candidates <= 1 && records === candidates ? inherited : undefined;
     const mode = own ?? guess ?? DEFAULT_MODE;
     modeCache.set(session, { seq: session.seq, mode: mode });
     return mode;
@@ -314,6 +317,7 @@ export function apply(ctx, config = {}) {
   const readQuota = lifecycle.readQuota;
   const currentStepKey = lifecycle.currentStepKey;
   const injectBoundary = lifecycle.injectBoundary;
+  const injectSwitch = lifecycle.injectSwitch;
   const forget = lifecycle.forget;
 
   /**
@@ -518,6 +522,53 @@ export function apply(ctx, config = {}) {
     const removed = await discardArtifact(childId, entry?.cwd ?? remaining?.session?.header?.cwd);
     if (!removed) throw new SideChatError(ERROR.io, 'artifact deletion failed', { childId: childId });
     return { closed: true };
+  }
+
+  /**
+   * Switch one live side chat to another mode in place: the thread, its log and
+   * its Agent stay exactly as they are, so nothing is closed, nothing is forked
+   * and nothing already said is lost. The switch applies the new tool mask before
+   * it queues anything, then queues the documented pair — a one-line notice, then
+   * the new mode's own explanation — because the mode that governs the next turn
+   * is the last explanation in the log, not the one the thread was opened with.
+   *
+   * A refusal injects nothing at all: an ended thread has no inbox to write to,
+   * and a Session this plugin does not own is never touched in the first place.
+   * @param payload - `{ childId, mode }` from the Client half.
+   * @returns the mode in effect now, with the mode it replaced.
+   */
+  async function switchThreadMode(payload) {
+    const childId = typeof payload.childId === 'string' ? payload.childId : '';
+    if (childId === '') throw new SideChatError(ERROR.badRequest, 'childId is required', { field: 'childId' });
+    if (!MODE_IDS.includes(payload.mode)) {
+      throw new SideChatError(ERROR.badRequest, `unknown mode "${String(payload.mode)}"`, {
+        field: 'mode',
+        modes: [...MODE_IDS],
+      });
+    }
+    const next = payload.mode;
+    const agent = liveAgent(childId);
+    if (agent === undefined) {
+      throw new SideChatError(ERROR.agentGone, 'the side chat has no live agent', { childId: childId });
+    }
+    if (!(await ownsThread(childId))) {
+      throw new SideChatError(ERROR.notOwned, 'the side chat does not belong to this plugin', { childId: childId });
+    }
+    const session = agent.session;
+    const from = modeOf(session);
+    // The same mode twice is not a switch: a repeated click must not append a
+    // pair of messages to a context the user already paid for.
+    if (from === next) return { switched: false, unchanged: true, mode: from };
+    const entry = sideChats.get(childId);
+    if (entry !== undefined) entry.mode = next;
+    else sideChats.set(childId, { mode: next, cwd: session.header?.cwd, dispose: () => agent.dispose() });
+    // Order matters: the mask decides what the next call may do, and the closed
+    // list the new explanation renders must be the list that mask leaves.
+    attach(agent);
+    // The read quota belongs to one step of one mode, and the new mode starts clean.
+    readQuota.delete(childId);
+    const queued = injectSwitch(agent, from, next);
+    return { switched: true, queued: queued, mode: next, from: from };
   }
 
   /** The largest single text block the control route accepts from the composer. */
@@ -806,6 +857,7 @@ export function apply(ctx, config = {}) {
         handler: createRouteHandler(ctx, {
           open: openThread,
           close: closeThread,
+          mode: switchThreadMode,
           prompt: promptThread,
           cancel: cancelThread,
           model: selectThreadModel,

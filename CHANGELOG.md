@@ -4,6 +4,60 @@ All notable changes to this plugin are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-11-14
+
+Modes can be switched in place, and the plugin has settings of its own.
+
+### Added
+
+- **In-place mode switch.** The mode chip on the tab's status bar opens the same three-mode menu,
+  but a pick now switches *this* thread: same Agent, same log, same conversation — nothing is
+  closed, forked or lost. The host applies the new tool mask first, then queues the switch through
+  the plugin's own route (`/mode`), and the page re-addresses the tab so the address carries the
+  mode the host is actually enforcing.
+- **A switch is exactly two messages, in this order.** A one-line notice
+  (`模式已切换：只读 → 完全继承。上一条模式的说明作废，以下一条为准。`, mark
+  `plugin:dsh-side-chat/switch`) followed by the new mode's own explanation (the same generator the
+  opening boundary uses, mark `plugin:dsh-side-chat`). One step claims both, so the later message is
+  the authority. Picking the mode the thread already has queues nothing.
+- **The plugin page has a form.** `plugins.bundle.config`, keyed by the package name, renders
+  「显示右上角快捷按钮」(on by default) and 「新会话的默认模式」(follow the last manual pick by
+  default). Both are page settings in `localStorage['dsh.side-chat.settings']`: no host round trip,
+  no restart, and the header button registers and unregisters from the same change.
+- The status bar's mode chip and the「以最新快照新开」action use the shared kit's `Button`
+  (`size: 'sm'`, `variant: 'ghost'`) and, when the kit ships it, its `Tooltip` instead of the
+  browser's native `title` hint. Their row is tightened with one metrics-only rule, so colour,
+  radius, hover and focus still come from the shared component.
+
+### Changed
+
+- **Mode recovery takes the newest explanation.** A switched thread records its mode more than
+  once; `recoveredMode` now scans the whole log and lets the last own mark win, and it counts only
+  marks that actually record a mode — a boundary without one neither competes nor makes the answer
+  ambiguous. Single-mark logs written by older builds behave exactly as before.
+- The read quota is reset when the mode changes: the quota belongs to one step of one mode.
+- "The mode is fixed when the thread is created" no longer holds for an open tab. The guide card
+  still opens a new thread per pick and says so while its menu is open; the status chip switches
+  the live one.
+
+### Fixed
+
+- **Re-addressing a tab no longer disposes its thread.** `replaceTab` closes the tab it replaces
+  and runs the registered close handler inside that same call, so the first switch would have
+  disposed the Agent and deleted the log of the very thread the new address points at. The switch
+  now wraps the open in a re-addressing guard, and `dev/client-logic.test.mjs` reproduces the
+  sidebar's close-on-replace so the regression cannot come back silently.
+- A host that predates the `mode` action reports「宿主还是旧版本：重载插件或重启 DSH 后再切换」
+  (`side-chat/not-found`) instead of the generic failure sentence, and a switch failure renders next
+  to the mode chip instead of past the status bar's spacer.
+
+### Notes
+
+- Each switch permanently adds two visible user-role messages to the thread's context. That is the
+  price of "the model must be told what changed"; the notice is one line on purpose.
+- The in-flight step keeps the system section it was assembled with; the mask and the guard change
+  immediately, and the new explanation lands on the next step.
+
 ## [1.1.0] — 2026-11-13
 
 A code-review round: host-contract cleanup, the open-path race, and failure recovery.

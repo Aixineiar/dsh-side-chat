@@ -890,6 +890,155 @@ check(
   'plugin page: the configuration entry is keyed by the package name',
 );
 
+/* ------------------------------------------------------------------ *
+ * In-place mode switch
+ * ------------------------------------------------------------------ */
+
+// One switch writes exactly one pair: a short notice, then the new mode's own
+// explanation — in that order, because one step claims both and only the later
+// message may define the mode.
+const switchRun = await openMode(hostExports, 'read');
+const switchId = switchRun.open.envelope.value.childId;
+check(switchRun.injected.length === 1, `open: exactly one explanation is injected (${switchRun.injected.length})`);
+const openedCount = switchRun.injected.length;
+const switched = await callRoute(switchRun, 'mode', { childId: switchId, mode: 'reply' });
+const pair = switchRun.injected.slice(openedCount);
+const notice = pair[0]?.content?.[0]?.text ?? '';
+const noticeKind = pair[0]?.source?.kind;
+const explanation = pair[1]?.content?.[0]?.text ?? '';
+check(
+  switched.envelope?.ok === true && switched.envelope.value.switched === true,
+  `switch: the Host reports the switch (${JSON.stringify(switched.envelope)})`,
+);
+check(switched.envelope?.value?.mode === 'reply' && switched.envelope?.value?.from === 'read', 'switch: the answer names both modes');
+check(pair.length === 2, `switch: exactly two messages are queued (${pair.length})`);
+check(noticeKind === 'plugin:dsh-side-chat/switch', `switch: the notice carries its own mark (${String(noticeKind)})`);
+check(
+  pair[1]?.source?.kind === 'plugin:dsh-side-chat' && pair[1]?.source?.mode === 'reply',
+  'switch: the explanation keeps the owner mark and records the new mode',
+);
+check(notice.startsWith('模式已切换：只读 → 只回复。'), `switch: the notice names where the mode came from and went (${notice})`);
+check(notice.split('\n').length === 1 && notice.length <= 64, `switch: the notice stays short (${notice.length} chars)`);
+check(explanation.includes('模式：只回复'), 'switch: the second message is the new mode explanation');
+check(
+  JSON.stringify(closedList(explanation) ?? []) === JSON.stringify(allowedByMask(switchRun.childTools.restrictCalls) ?? []),
+  'switch: the new explanation lists exactly what the new mask leaves callable',
+);
+const switchSection = switchRun.sections.find((definition) => definition.name === 'side-chat:policy');
+check(
+  switchSection.text({ agent: switchRun.child }).includes('侧边对话（只回复）'),
+  'switch: the next turn renders the system section of the new mode',
+);
+const switchGuard = switchRun.guards[0]({ agent: switchRun.child, name: 'read' });
+check(
+  typeof switchGuard === 'string' && switchGuard.includes('只回复模式没有任何工具'),
+  `switch: the guard refuses by the new mode immediately (${String(switchGuard)})`,
+);
+const guardWidened = switchRun.guards[0]({ agent: switchRun.child, name: 'write' });
+check(guardWidened !== undefined, 'switch: the mask and the guard agree after the switch');
+
+const widened = await callRoute(switchRun, 'mode', { childId: switchId, mode: 'full' });
+check(widened.envelope?.value?.switched === true, `switch: a second switch is accepted (${JSON.stringify(widened.envelope)})`);
+check(switchRun.injected.length === openedCount + 4, `switch: the second switch adds its own pair (${switchRun.injected.length - openedCount})`);
+check(
+  switchRun.guards[0]({ agent: switchRun.child, name: 'write' }) === undefined,
+  'switch: `full` widens the mask instead of narrowing it',
+);
+const repeated = await callRoute(switchRun, 'mode', { childId: switchId, mode: 'full' });
+check(
+  repeated.envelope?.value?.switched === false && switchRun.injected.length === openedCount + 4,
+  `switch: picking the current mode queues nothing (${JSON.stringify(repeated.envelope?.value)})`,
+);
+
+// Every notice must stay clear of the three fixed openings a mode explanation
+// uses: that sentence is what a log scan reads as the mode definition.
+const FIXED_OPENINGS = ['模式：只回复', '模式：只读', '模式：完全继承'];
+for (const from of ['reply', 'read', 'full']) {
+  for (const to of ['reply', 'read', 'full']) {
+    if (from === to) continue;
+    const text = promptTable.switchText(from, to);
+    check(
+      FIXED_OPENINGS.every((opening) => !text.includes(opening)) && !text.includes('\n'),
+      `switch notice: ${from} -> ${to} repeats no mode opening`,
+    );
+  }
+}
+
+// A refused switch writes nothing to the log at all.
+const beforeRefusals = switchRun.injected.length;
+const foreignSwitch = await callRoute(switchRun, 'mode', { childId: 'session-main', mode: 'reply' });
+check(
+  foreignSwitch.status === 403 && foreignSwitch.envelope?.error?.code === 'side-chat/not-owned',
+  `switch: a foreign Session is refused (${foreignSwitch.status} ${JSON.stringify(foreignSwitch.envelope?.error?.code)})`,
+);
+const endedSwitch = await callRoute(switchRun, 'mode', { childId: 'session-nope', mode: 'reply' });
+check(
+  endedSwitch.status === 409 && endedSwitch.envelope?.error?.code === 'side-chat/agent-gone',
+  `switch: an ended thread answers 409 (${endedSwitch.status} ${JSON.stringify(endedSwitch.envelope?.error?.code)})`,
+);
+const modeTypo = await callRoute(switchRun, 'mode', { childId: switchId, mode: 'admin' });
+check(
+  modeTypo.status === 400 && modeTypo.envelope?.error?.code === 'side-chat/bad-request',
+  `switch: an unknown mode is a bad request, never a silent default (${modeTypo.status})`,
+);
+check(switchRun.injected.length === beforeRefusals, 'switch: no refusal injects anything');
+
+// A reload must not add a second explanation, and it must take the newest one.
+const injectionsFor = (run, childId) => run.injected.filter((message) => message?.source?.childId === childId);
+const reloadRun = await openMode(hostExports, 'read', { adopted: true });
+check(
+  injectionsFor(reloadRun, reloadRun.adopted.id).length === 0,
+  `reload: an adopted thread gets no second explanation (${injectionsFor(reloadRun, reloadRun.adopted.id).length})`,
+);
+const lastWins = await openMode(hostExports, 'read', {
+  adopted: true,
+  adoptedMarks: [
+    { text: '模式：只读。', childId: 'session-adopted', mode: 'read' },
+    { text: '模式：完全继承。', childId: 'session-adopted', mode: 'full' },
+  ],
+});
+check(
+  lastWins.adopted.tools.restrictCalls.length === 0,
+  `recovered: the newest explanation governs (full leaves no mask, ${lastWins.adopted.tools.restrictCalls.length})`,
+);
+check(
+  injectionsFor(lastWins, lastWins.adopted.id).length === 0,
+  'recovered: recovering a mode injects nothing',
+);
+const lastWinsBack = await openMode(hostExports, 'read', {
+  adopted: true,
+  adoptedMarks: [
+    { text: '模式：完全继承。', childId: 'session-adopted', mode: 'full' },
+    { text: '模式：只读。', childId: 'session-adopted', mode: 'read' },
+  ],
+});
+const backMask = allowedByMask(lastWinsBack.adopted.tools.restrictCalls) ?? [];
+check(
+  lastWinsBack.adopted.tools.restrictCalls.length > 0 && backMask.length > 0,
+  `recovered: the order decides, not the first mark (${JSON.stringify(backMask)})`,
+);
+
+// An old-format log whose only mark is a switch notice: the notice must not be
+// read as a mode, so the read-only default still applies.
+const noticeOnly = await openMode(hostExports, 'read', {
+  adopted: true,
+  adoptedMarks: [{ text: promptTable.switchText('full', 'reply') }],
+});
+const noticeMask = allowedByMask(noticeOnly.adopted.tools.restrictCalls) ?? [];
+check(
+  noticeMask.length > 0,
+  `recovered: a switch notice is not read as a mode definition (${JSON.stringify(noticeMask)})`,
+);
+
+dump.switch = {
+  notice: notice,
+  explanation: explanation.slice(0, 120),
+  noticeKind: noticeKind ?? null,
+  maskAfterReply: allowedByMask(switchRun.childTools.restrictCalls) ?? null,
+  refused: { foreign: foreignSwitch.status, ended: endedSwitch.status, typo: modeTypo.status },
+};
+dump.recoveredLast = { lastWins: lastWins.adopted.tools.restrictCalls.length, noticeOnly: noticeMask };
+
 if (exportPath !== undefined) {
   try {
     await writeFile(exportPath, JSON.stringify(dump, null, 2), 'utf8');

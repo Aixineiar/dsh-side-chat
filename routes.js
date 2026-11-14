@@ -138,7 +138,7 @@ function writeError(res, code, detail, details) {
 /**
  * Build the prefix handler.
  * @param ctx - Host plugin context, read for the connection fence.
- * @param actions - `{ open, close, prompt, cancel, model, sweep }` thread operations.
+ * @param actions - `{ open, close, mode, prompt, cancel, model, sweep }` thread operations.
  * @returns the `(req, res)` handler.
  */
 export function createRouteHandler(ctx, actions) {
@@ -171,6 +171,10 @@ export function createRouteHandler(ctx, actions) {
       }
       if (action === 'cancel') {
         writeJson(res, 200, { ok: true, value: await actions.cancel(payload) });
+        return;
+      }
+      if (action === 'mode') {
+        writeJson(res, 200, { ok: true, value: await actions.mode(payload) });
         return;
       }
       if (action === 'model') {

@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { BOUNDARY_SOURCE, boundaryText } from './prompt.js';
+import { BOUNDARY_SOURCE, SWITCH_SOURCE, boundaryText, switchText } from './prompt.js';
 
 /**
  * Install the lifecycle of one plugin instance.
@@ -62,6 +62,27 @@ export function createLifecycle(deps) {
   }
 
   /**
+   * Queue one mode's own explanation as a user-role context injection. This is
+   * the message that carries the owner mark and the recorded mode, so it is also
+   * what a reload recovers the thread's mode from — and the last one in the log
+   * is the one that governs.
+   * @param agent - side-chat Agent.
+   * @param mode - the mode the explanation describes.
+   */
+  function queueExplanation(agent, mode) {
+    const session = agent.session;
+    agent.inject({
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: boundaryText(mode, allowedToolsFor(agent, mode)) }],
+      // The thread id and mode travel with the mark: a nested side chat copies
+      // its parent's log, so a boundary that names its own thread is the only
+      // one an "already injected" scan may accept.
+      source: { kind: BOUNDARY_SOURCE, childId: session.id, mode: mode },
+    });
+  }
+
+  /**
    * Queue the mode's boundary as a user-role context injection, exactly once
    * per thread. It lands in `next-step`, which the opening step claims before
    * the waking user message — so the boundary is the freshest instruction.
@@ -83,20 +104,41 @@ export function createLifecycle(deps) {
         return;
       }
     }
-    const mode = modeOf(session);
+    try {
+      queueExplanation(agent, modeOf(session));
+      boundaryQueued.add(session.id);
+    } catch (error) {
+      ctx.logger?.warn?.(`side-chat: cannot queue the boundary for "${session.id}": ${String(error)}`);
+    }
+  }
+
+  /**
+   * Queue the pair a switch writes: the one-line notice, then the new mode's own
+   * explanation — in that order, because both are claimed by the same step and
+   * only the later one may define the mode.
+   * @param agent - the live side-chat Agent.
+   * @param from - the mode being left.
+   * @param to - the mode being entered.
+   * @returns whether the pair was queued.
+   */
+  function injectSwitch(agent, from, to) {
+    const session = agent?.session;
+    if (session === undefined || session === null) return false;
+    if (from === to) return false;
     try {
       agent.inject({
         id: randomUUID(),
         role: 'user',
-        content: [{ type: 'text', text: boundaryText(mode, allowedToolsFor(agent, mode)) }],
-        // The thread id and mode travel with the mark: a nested side chat copies
-        // its parent's log, so a boundary that names its own thread is the only
-        // one an "already injected" scan may accept.
-        source: { kind: BOUNDARY_SOURCE, childId: session.id, mode: mode },
+        content: [{ type: 'text', text: switchText(from, to) }],
+        source: { kind: SWITCH_SOURCE, childId: session.id, mode: to },
       });
+      queueExplanation(agent, to);
+      // The thread now carries an explanation a reload must not add to.
       boundaryQueued.add(session.id);
+      return true;
     } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot queue the boundary for "${session.id}": ${String(error)}`);
+      ctx.logger?.warn?.(`side-chat: cannot queue the mode switch for "${session.id}": ${String(error)}`);
+      return false;
     }
   }
 
@@ -193,6 +235,7 @@ export function createLifecycle(deps) {
     readQuota: readQuota,
     currentStepKey: currentStepKey,
     injectBoundary: injectBoundary,
+    injectSwitch: injectSwitch,
     adopt: adopt,
     forget: forget,
     install: install,

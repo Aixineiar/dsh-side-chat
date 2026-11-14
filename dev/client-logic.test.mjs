@@ -57,6 +57,35 @@ function clickGuide(boot, props) {
   return tree;
 }
 
+/** Render the status bar of one tab and return its element tree. */
+function renderStatus(boot, address, tab) {
+  const chat = boot.captured.slotLog.find(
+    (record) => record.definition.name === 'sidebar.right.pane.tab' && record.definition.key === '@aixineiar/dsh-side-chat/chat',
+  );
+  assert.ok(chat !== undefined, 'the conversation tab body is registered');
+  const props = {
+    useTabInfo: () => ({ tab: tab === undefined ? { contentId: address } : tab }),
+    useSessions: (select) => select({ byId: {} }),
+    useResource: () => ({ status: 'loading' }),
+  };
+  const outer = chat.component(props);
+  const body = Array.isArray(outer.children) ? outer.children[0] : outer.children;
+  const tree = body.type(body.props);
+  const status = findElement(tree, (element) => element.props?.parsed !== undefined);
+  assert.ok(status !== undefined, 'the status bar is rendered');
+  return status.type(status.props);
+}
+
+/** The mode control's menu of one rendered status bar. */
+function statusMenu(tree) {
+  return findElement(tree, (element) => element.props?.onSelect !== undefined && element.props?.items !== undefined);
+}
+
+/** The snapshot label of one rendered status bar. */
+function statusLabel(tree) {
+  return findElement(tree, (element) => element.props?.className === 'dsh-side-chat-status-label');
+}
+
 test('retain: the catalog race is waited out, not surfaced', async () => {
   const catalog = { ids: [], byId: {} };
   const order = [];
@@ -443,31 +472,121 @@ test('settings: a stored document drives the page, and garbage falls back', asyn
   );
 });
 
-test('status: the snapshot line names the mode the Host answered with', async () => {
-  const boot = await bootClient();
-  const chat = boot.captured.slotLog.find(
-    (record) => record.definition.name === 'sidebar.right.pane.tab' && record.definition.key === '@aixineiar/dsh-side-chat/chat',
+test('status: the mode chip names the recorded mode and switches it in place', async () => {
+  const calls = [];
+  const boot = await bootClient({
+    route: async (action, payload) => {
+      calls.push({ action: action, payload: payload });
+      if (action === 'mode') return { ok: true, value: { switched: true, queued: true, mode: 'full', from: 'read' } };
+      return { ok: true, value: {} };
+    },
+  });
+  const line = renderStatus(boot, ADDRESS);
+  const label = statusLabel(line);
+  assert.ok(label !== undefined, 'the status bar has a snapshot line');
+  assert.match(String(label.children), /status\.snapshot\(/, 'the line keeps the snapshot sentence');
+  const menu = statusMenu(line);
+  assert.ok(menu !== undefined, 'a recorded mode renders a switch control');
+  assert.equal(menu.props.selectedId, 'read', 'the control starts on the recorded mode');
+  assert.deepEqual(
+    menu.props.items.map((item) => item.id),
+    ['reply', 'read', 'full'],
+    'every mode is offered',
   );
-  assert.ok(chat !== undefined, 'the conversation tab body is registered');
-  const render = (address) => {
-    const props = {
-      useTabInfo: () => ({ tab: { contentId: address } }),
-      useSessions: (select) => select({ byId: {} }),
-      useResource: () => ({ status: 'loading' }),
-    };
-    const outer = chat.component(props);
-    const body = Array.isArray(outer.children) ? outer.children[0] : outer.children;
-    const tree = body.type(body.props);
-    const status = findElement(tree, (element) => element.props?.parsed !== undefined);
-    assert.ok(status !== undefined, 'the status bar is rendered');
-    const line = status.type(status.props);
-    const label = findElement(line, (element) => element.props?.className === 'dsh-side-chat-status-label');
-    assert.ok(label !== undefined, 'the status bar has a snapshot line');
-    return String(label.children);
+  const trigger = menu.props.anchor;
+  assert.ok(trigger !== undefined, 'the control is a button in the status bar');
+  assert.equal(trigger.props.className, 'dsh-side-chat-link dsh-side-chat-status-trigger');
+  assert.equal(String(trigger.children[0]), 'mode.read', 'the button carries the mode label');
+
+  const opened = [];
+  // `replaceTab` closes the tab it replaces inside the same call, and the sidebar
+  // runs the registered close handler for it. This stub does exactly that: a
+  // close handler that disposes the thread would delete the conversation the new
+  // address points at.
+  const tab = {
+    contentId: ADDRESS,
+    actions: {
+      openResource: (address, options) => {
+        opened.push({ address: address, options: options });
+        const handler = boot.captured.closeHandlers.get('sidechat');
+        if (handler !== undefined) handler('session-child', { contentId: ADDRESS });
+      },
+    },
   };
-  const withMode = render(ADDRESS);
-  assert.match(withMode, /status\.snapshotMode/, 'a recorded mode prefixes the snapshot line');
-  assert.match(withMode, /mode\.read/, 'the prefix names the mode');
-  const withoutMode = render('dsh-resource://sidechat/session/session-child?parent=session-main&at=7&t=1000');
-  assert.match(withoutMode, /status\.snapshot\(/, 'an address without a mode omits the prefix instead of guessing');
+  statusMenu(renderStatus(boot, ADDRESS, tab)).props.onSelect('full');
+  await settle(20);
+  const switched = calls.filter((entry) => entry.action === 'mode');
+  assert.equal(switched.length, 1, 'the switch is a Host round trip, not a local edit');
+  assert.deepEqual(switched[0].payload, { childId: 'session-child', mode: 'full' });
+  assert.equal(
+    calls.filter((entry) => entry.action === 'close').length,
+    0,
+    'the replaced tab never disposes the thread it re-addresses',
+  );
+  assert.equal(opened.length, 1, 'the tab is re-addressed exactly once');
+  assert.match(opened[0].address, /[?&]m=full(&|$)/, 'the new address records the new mode');
+  assert.match(opened[0].address, /[?&]t=1000(&|$)/, 'the snapshot time is kept, so nothing is re-seeded');
+  assert.equal(opened[0].options.replaceTab, true, 'the same tab is replaced, not a second one opened');
+
+  statusMenu(renderStatus(boot, ADDRESS, tab)).props.onSelect('read');
+  await settle(20);
+  assert.equal(calls.filter((entry) => entry.action === 'mode').length, 1, 'picking the current mode sends nothing');
+  assert.equal(opened.length, 1, 'and re-addresses nothing');
+
+  const old = renderStatus(boot, 'dsh-resource://sidechat/session/session-child?parent=session-main&at=7&t=1000');
+  assert.match(String(statusLabel(old).children), /status\.snapshot\(/, 'an address without a mode keeps the plain line');
+  assert.equal(statusMenu(old), undefined, 'and offers no control instead of guessing');
+
+  // The guard covers one re-address, not every close: a user close still disposes.
+  boot.captured.closeHandlers.get('sidechat')('session-child', { contentId: ADDRESS });
+  await settle(20);
+  assert.equal(calls.filter((entry) => entry.action === 'close').length, 1, 'a user close still closes the thread');
 });
+
+test('status: both actions use the shared button and the shared tooltip', async () => {
+  const tooltip = function Tooltip() {
+    return null;
+  };
+  const kitButton = function KitButton() {
+    return null;
+  };
+  const boot = await bootClient({
+    primitives: {
+      Menu: function Menu() {
+        return null;
+      },
+      Button: kitButton,
+      IconChevronDownOutlineRegular: function Icon() {
+        return null;
+      },
+      Switch: function Switch() {
+        return null;
+      },
+      SegmentedControl: function Segmented() {
+        return null;
+      },
+      Tooltip: tooltip,
+    },
+  });
+  const line = renderStatus(boot, ADDRESS);
+  const anchor = statusMenu(line).props.anchor;
+  assert.equal(anchor.type, tooltip, 'the mode control is wrapped in the shared tooltip');
+  assert.equal(anchor.props.label, 'status.mode.help', 'the bubble carries the mode hint');
+  assert.equal(anchor.props.side, 'bottom', 'the bubble opens under the status row');
+  assert.equal(anchor.props.portal, true, 'the bubble is portalled, not clipped by the row');
+  const chip = anchor.children[0];
+  assert.equal(chip.type, kitButton, 'the anchor is the shared button, not a local one');
+  assert.equal(chip.props.size, 'sm', 'the shared small size is used');
+  assert.equal(chip.props.variant, 'ghost', 'the shared ghost variant is used');
+  assert.equal(chip.props.className, 'dsh-side-chat-status-trigger', 'the row tightens it with its own class only');
+  assert.ok(chip.props.icon !== undefined, 'the chevron rides the icon slot');
+  assert.equal(String(chip.children), 'mode.read', 'the button carries the mode label and no duplicate hint');
+
+  const action = line.children[line.children.length - 1];
+  assert.equal(action.type, tooltip, 'the snapshot action is wrapped in the shared tooltip');
+  assert.equal(action.props.label, 'status.syncHint');
+  const syncButton = action.children[0];
+  assert.equal(syncButton.type, kitButton, 'and it is the shared button too');
+  assert.equal(syncButton.props.size, 'sm');
+});
+
