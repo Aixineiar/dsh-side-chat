@@ -16,7 +16,7 @@ Three modes — *reply only* / *read-only* / *fully inherited* — enforced in c
 
 ![Side chat overview: main session on the left, inherited side chat on the right](docs/images/overview.png)
 
-> Left: the main session. Right: a side chat seeded from its context. The「工具已更新 · 移除 37 个」line is the harness recording that the side chat's tool set really was cut down in *reply only* mode — not the prompt claiming it.
+> Left: the main session. Right: a side chat seeded from its context — the tab is titled「侧边 · …」and its status bar names the mode and the snapshot time. Answers stay on that side; nothing in the main session's history is rewritten.
 
 ---
 
@@ -32,7 +32,7 @@ A main session is one continuous, persisted context that every later request car
 
 ![Mode menu: reply only / read-only / fully inherited](docs/images/modes.png)
 
-*The mode menu: reply only / read-only / fully inherited. The last choice is remembered; the default is read-only.*
+*The mode menu on the tab's status bar: reply only / read-only / fully inherited — picking one switches the open thread in place. The choice is remembered; the default is read-only.*
 
 | | **Reply only** `reply` | **Read-only** `read` (default) | **Fully inherited** `full` |
 |---|---|---|---|
@@ -49,9 +49,9 @@ A main session is one continuous, persisted context that every later request car
 
 **Fully inherited** — same capabilities as the main session, different stance: the inherited history is reference, not a task; answers stay in the sidebar; a modification request gets a plan first, then exactly one question — *run it here, or in the main session?* Choosing "main session" prints the same suggestion block and stops all writes.
 
-![The side-chat entry card in the tool panel, its subtitle showing the current mode](docs/images/launcher.png)
+![The side-chat entry card in the tool panel, with its mode menu](docs/images/launcher.png)
 
-*Entry point: the side-chat card in the tool panel — its subtitle is the mode in force.*
+*Entry point: the side-chat card in the tool panel. Its `⌄` menu opens a **new** side chat — the subtitle turns into that hint while the menu is open.*
 
 ### Same sentence, three modes
 
@@ -126,6 +126,10 @@ Two entry points (tool panel card, conversation header button). Both the header 
 The mode menu beside the card title picks the mode for a **new** side chat: choosing one opens a new tab and closes the current one, so the old conversation (and everything it produced) is discarded. The card subtitle says so while the menu is open.
 
 The mode chip on the tab's status bar switches **in place**: same agent, same log, same conversation, nothing opened or closed. It takes effect on the next request (the tool list is re-declared and the host's own tool-change notice counts the additions and removals), and every switch permanently adds two user-role messages to that thread — a one-line「从 X 切到 Y」notice followed by the new mode's explanation. Switching to the mode the thread already has queues nothing. A tab restored from an older build without a recorded mode shows no chip and keeps the plain line instead of guessing.
+
+![The tab's status bar: the mode chip on the left, the fresh-snapshot action on the right](docs/images/status.png)
+
+*The tab's status bar: the mode chip on the left (opens the in-place switch), the「以最新快照新开」action on the right.*
 
 **Closing the tab deletes the side chat** — agent disposed, log file and directory removed. A boot sweep cleans up leftovers from crashes. If the dispose or the deletion fails, the thread is deliberately kept and the card offers「重试关闭」for exactly those threads.
 
