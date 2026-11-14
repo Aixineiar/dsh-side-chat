@@ -9,7 +9,7 @@ Three modes — *reply only* / *read-only* / *fully inherited* — enforced in c
 [![npm](https://img.shields.io/npm/v/@aixineiar/dsh-side-chat.svg)](https://www.npmjs.com/package/@aixineiar/dsh-side-chat)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-DSH%20Web-4c6ef5.svg)](#compatibility)
-[![dsh](https://img.shields.io/badge/dsh-0.2.2--rc.1-1f9d55.svg)](#compatibility)
+[![dsh](https://img.shields.io/badge/dsh-0.2.2--rc.3-1f9d55.svg)](#compatibility)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg)](#development)
 
 </div>
@@ -38,14 +38,14 @@ A main session is one continuous, persisted context that every later request car
 |---|---|---|---|
 | Tools | none | read-only allowlist (12 by default) | same as the main session |
 | Tool schemas in the request | omitted | read-only tools only | all |
-| Host `tool:*` usage paragraphs | stripped | only those for callable tools | all |
+| Host `tool:*` usage paragraphs | none (the host renders them per scope) | only those for callable tools | all |
 | Writes / commands / subagents | impossible | impossible | allowed (host permissions and sandbox apply) |
 | Tool quota | n/a | 1 read call per step | none |
 | On a modification request | prints a "modification suggestion to run in the main session" block | same, may use that step's one read to confirm the target | prints a plan, asks once "run here or in the main session?" |
 
 **Reply only** — no tool channel at all: the host calls `tools.restrict({ deny: … })`, so the request carries no tool schemas, and text that imitates a call is just text (nothing parses it, nothing answers it). A backstop `tools.guard` refuses anything that slips through. Good for "one sentence, please", "what does this error mean", "which option is safer".
 
-**Read-only** (default) — inherits the context plus `read`, `read_image`, `glob`, `grep`, `lsp`, the five `session_*` tools, `web_search`, `web_fetch`. **One read call per model step**, success or failure counts. System-prompt paragraphs for masked tools are stripped too, so the manual never advertises a tool the request does not carry.
+**Read-only** (default) — inherits the context plus `read`, `read_image`, `glob`, `grep`, `lsp`, the five `session_*` tools, `web_search`, `web_fetch`. **One read call per model step**, success or failure counts. Tool paragraphs follow the session's visible tool set — the host renders every `tool:*` section against it, so a masked tool's paragraph is already empty and this plugin never rewrites `system-prompt/assemble`.
 
 **Fully inherited** — same capabilities as the main session, different stance: the inherited history is reference, not a task; answers stay in the sidebar; a modification request gets a plan first, then exactly one question — *run it here, or in the main session?* Choosing "main session" prints the same suggestion block and stops all writes.
 
@@ -65,7 +65,7 @@ A main session is one continuous, persisted context that every later request car
 
 A **DSH plugin** (host + client halves), loaded by DSH through a profile bundle.
 
-Requirements: DSH **0.2.2-rc.1**, Node ≥ 20, pnpm, and the main session **running** (open on the left) — the plugin seeds from its latest committed event.
+Requirements: DSH **0.2.2-rc.3**, Node ≥ 20, pnpm, and the main session **running** (open on the left) — the plugin seeds from its latest committed event.
 
 **A. By name (recommended)**
 
@@ -123,21 +123,33 @@ The bundle's own [`cordis.patch.yml`](cordis.patch.yml) already carries that row
 
 Two entry points (tool panel card, conversation header button). Inside the tab: the header shows「上下文截至 <time>」and a「以最新快照新开」action (opens a fresh snapshot and closes the current side chat); the composer has its own model picker that does not touch the global default; the stop button cancels the running turn.
 
-**Closing the tab deletes the side chat** — agent disposed, log file and directory removed. A boot sweep cleans up leftovers from crashes.
+The mode menu beside the card title picks the mode for a **new** side chat: choosing one opens a new tab and closes the current one, so the old conversation (and everything it produced) is discarded. The card subtitle says so while the menu is open.
+
+**Closing the tab deletes the side chat** — agent disposed, log file and directory removed. A boot sweep cleans up leftovers from crashes. If the dispose or the deletion fails, the thread is deliberately kept and the card offers「重试关闭」for exactly those threads.
+
+While it lives, a side chat is an ordinary catalog entry titled「侧边 · <main title>」, so it appears in any list rendered from the session catalog; closing the tab removes it again.
 
 ## Development
 
-No build step (ESM, no TypeScript, no bundler). `npm test` runs `dev/boot-sim.mjs`, a self-contained boot simulation with 197 assertions over both halves. See [CONTRIBUTING.md](CONTRIBUTING.md).
+No build step (ESM, no TypeScript, no bundler). `npm test` runs two suites: `dev/boot-sim.mjs` (185 assertions over both halves) and `node --test dev/` (10 interaction-level Client assertions, driven through the registered surfaces rather than private helpers). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Compatibility
 
-Validated on DSH **0.2.2-rc.1** only, against the host contracts `tools.view/restrict/guard`, `systemPrompt.section`, `agents.create`, `sessionPersistence.locate/list`, `sessionQuery.observeSession`, `agentPresets.presetForSession`.
+Validated on DSH **0.2.2-rc.3** only. The host contracts this plugin actually uses, all checked on that build:
 
-Known limits: the read quota is per *step*, not per answer; the side chat does not follow the main session after opening; closing is irreversible; the client half is a single file because the DSH client loader cannot synchronously require sibling `client*.js` files.
+`tools.view/restrict/guard/definitions` · `systemPrompt.section` · `agents.create/get/list` · `agentPresets.presetForSession/resolve/mount` · `agentDefaultModel.currentSelection` · `sessionTitle.rename` · `sessionQuery.observeSession` · `sessionPersistence.stat/list` (plus the jsonl backend's `locate`) · `workspaceRegistry.archivedSessionIds/unarchiveSession` · `webServer.register` + `connection.requestRejection` · client side: `sessions.retain/refresh/using/list`, `resources.register`, `sidebarRightTabs.register`, `sidebarRight.openResource/registerCloseHandler`, `slots.register/inject`, `locale.register/bind`.
+
+`engines.dsh` only decides whether the package can be installed; this table is what to re-check when the host moves. An earlier build carried fallbacks for `sessionController.composeAgent`, `sessionController.presetForSession` and `sessionPersistence.locate`: the first two belong to the controller's internal agent controller rather than the `sessionController` service, and the third is a jsonl-backend extra rather than a `SessionPersistence` contract member — none of them could ever run.
+
+Known limits: the read quota is per *step*, not per answer; the side chat does not follow the main session after opening; closing is irreversible; the mode is fixed when the thread is created (switching opens a new one); the control route accepts text parts and already-admitted attachment references only; a thread that could not be closed stays visible on the card with a retry; threads parked in the archive by older builds are cleaned up at boot; the client half is a single file because the DSH client loader cannot synchronously require sibling `client*.js` files.
 
 ## Security
 
-Tool gating is implemented in the host tool registry (`restrict` + `guard`), so the model cannot reach a masked tool even if it ignores every instruction. Control actions go through `POST /dsh-side-chat/api`, are authenticated by the host connection layer, and a close verifies that the session is really a thread this plugin created before disposing or deleting anything. Report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
+Tool gating is implemented in the host tool registry (`restrict` + `guard`), so the model cannot reach a masked tool even if it ignores every instruction. Control actions go through `POST /dsh-side-chat/api`, are authenticated by the host connection layer, and a close verifies that the session is really a thread this plugin created before disposing or deleting anything.
+
+Every refusal carries a stable `code` and its HTTP status (400 bad request, 403 not this plugin's thread, 409 thread gone, 413 body too large, 500 I/O); the page renders a local sentence, and the host's raw message only reaches the console. The `prompt` action accepts text blocks and attachment references the host already promoted — anything else is dropped and counted, and an entirely invalid prompt answers 400 without committing a session event.
+
+Report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 

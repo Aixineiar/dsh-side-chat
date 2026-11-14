@@ -19,10 +19,12 @@ import { BOUNDARY_SOURCE, boundaryText } from './prompt.js';
  * @param deps.attach - applies one thread's tool mask.
  * @param deps.release - lifts one thread's tool mask.
  * @param deps.liveAgent - the live Agent for one Session.
+ * @param deps.forgetUnmaskable - drops the per-thread unmaskable reports.
  * @returns the lifecycle state and installation entry point.
  */
 export function createLifecycle(deps) {
   const { ctx, sideChats, isSideChat, modeOf, isBoundaryEvent, allowedToolsFor, attach, release, liveAgent } = deps;
+  const forgetUnmaskable = deps.forgetUnmaskable ?? (() => undefined);
 
   /**
    * Threads whose boundary was already queued. `inject()` lands in the inbox,
@@ -141,6 +143,7 @@ export function createLifecycle(deps) {
       const sessionId = agent?.session?.id ?? agent?.id;
       if (sessionId === undefined) return;
       release(sessionId);
+      forgetUnmaskable(sessionId);
       boundaryQueued.delete(sessionId);
       readQuota.delete(sessionId);
     });

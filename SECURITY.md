@@ -4,10 +4,10 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.0.x   | ✅ |
-| < 1.0   | ❌ |
+| 1.1.x   | ✅ |
+| < 1.1   | ❌ |
 
-Only the DSH host version named in the README (**0.2.2-rc.1**) has been verified. A different host
+Only the DSH host version named in the README (**0.2.2-rc.3**) has been verified. A different host
 build may change the tool registry or session APIs this plugin relies on; treat it as unverified.
 
 ## Reporting a vulnerability

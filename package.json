@@ -1,6 +1,6 @@
 {
   "name": "@aixineiar/dsh-side-chat",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Temporary side conversation in the right sidebar with three modes (reply only / read-only / fully inherited), rendering the same chat UI as the main conversation.",
   "license": "MIT",
@@ -36,8 +36,9 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "test": "node dev/boot-sim.mjs",
+    "test": "node dev/boot-sim.mjs && node --test dev/",
     "dev:boot-sim": "node dev/boot-sim.mjs",
+    "dev:client-test": "node --test dev/",
     "prepublishOnly": "npm test"
   },
   "files": [
@@ -63,7 +64,6 @@
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-subagent",
         "@deepseek-ai/dsh-client-resources"
       ]
     }

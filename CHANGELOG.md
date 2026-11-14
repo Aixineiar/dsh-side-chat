@@ -4,19 +4,68 @@ All notable changes to this plugin are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] — 2026-11-13
+
+A code-review round: host-contract cleanup, the open-path race, and failure recovery.
+
+### Fixed
+
+- **Opening a side chat no longer fails with `sessions.retain: unknown session …`.** The `open`
+  action answers over HTTP while the new row arrives on the socket, so the client catalog can lag;
+  the resource coroutine now refreshes the catalog and retries with backoff, and a tab that still
+  cannot be retained shows a readable sentence plus a **Retry** button instead of the raw host error.
+- **A failed close is recoverable.** A dispose or delete failure keeps the thread (and its teardown
+  handle) on purpose, and the guide card now offers「重试关闭」for exactly those threads. Refusals are
+  no longer retried blindly: the route says which failure it was, and the client retries only I/O and
+  transport failures.
+- **The `prompt` action validates its content.** Only text parts and attachment references the host
+  already promoted reach the session log; malformed blocks are dropped and counted, and an entirely
+  invalid prompt answers 400 without committing an event (a malformed block used to make the thread
+  unreadable on replay).
+- **A malformed `allow`/`deny` refuses activation** instead of silently falling back to the default
+  read-only list, which used to make "I narrowed the read-only scope" a no-op.
+- **The Session-command patch owns its lifecycle.** Installing `remote.session.prompt/cancel/selectModel`
+  now records an undo per method and removes it when the plugin unloads; a later wrapper by another
+  plugin is never clobbered.
+- `artifactPath()` prefers `sessionPersistence.stat(id)`, so closing a tab no longer enumerates every
+  stored session when the backend's `locate()` is unavailable.
+- The guide card's error boundary renders a minimal visible card instead of an empty div, and a
+  half-changed shared UI kit degrades to the local menu as a whole instead of mixing components.
 
 ### Changed
 
-- Renamed the package from `@local/dsh-side-chat` to **`@aixineiar/dsh-side-chat`**, so it can be
-  installed by name (`pnpm add @aixineiar/dsh-side-chat`, or the same name in the plugin manager) and
-  resolved as a profile bundle. The unscoped names (`dsh-side-chat`, `dsh-plugin-side-chat`) were
-  already taken on npm.
-- Published to npm as **`@aixineiar/dsh-side-chat@1.0.0`**: `pnpm add @aixineiar/dsh-side-chat`, or
-  *Add plugin* in the DSH plugin manager with the same name.
-- Dropped `"private": true`, added `engines.dsh` (`^0.2.2-rc.1`) so an incompatible host refuses the
-  install before writing anything, and `prepublishOnly` now runs the boot simulation.
-- README install section: install by name first, GitHub and local directory as alternatives.
+- **The plugin no longer listens to `system-prompt/assemble`.** Every hosting package renders its
+  `tool:*` section against the viewing scope's tool view, so a masked tool's paragraph is already
+  empty; filtering there only deleted other plugins' contributions for no gain.
+- Removed three fallbacks for members that do not exist on the host's rc.3 services
+  (`sessionController.composeAgent`, `sessionController.presetForSession`,
+  `sessionPersistence.locate` as a contract member). None of them could ever run, and the first one
+  hid the fact that the preset mount path is done locally.
+- **Compatibility statement rewritten against DSH 0.2.2-rc.3**, with the exact contract list the
+  plugin uses instead of "checked item by item" against a version the plugin no longer ran on.
+- **The docs no longer claim mode switching applies to an open conversation.** The mode is fixed when
+  the thread is created; choosing another mode opens a new side chat and closes the current one, and
+  the card says so while the menu is open.
+- **"Stays out of every session list" corrected.** A live side chat is an ordinary catalog entry
+  titled「侧边 · <main title>」— it is *removed*, not hidden, when its tab closes.
+- The plugin description in `locale/zh.json` and `locale/en.json` names all three modes, including
+  that `full` can write files and run commands.
+- `dsh.client.inject` no longer lists `@deepseek-ai/dsh-client-ui-subagent`, which the client half
+  never requires or uses.
+
+### Added
+
+- `dev/harness.mjs` and `dev/client-logic.test.mjs`: 10 interaction-level assertions driven through
+  the *registered* surfaces (resource protocol, close handler, guide card, tab type, bridge), covering
+  the catalog race, the retry entries, the request body, the kit guard and the patch teardown.
+- A stable error-code table (`side-chat/bad-request` 400, `not-owned` 403, `agent-gone` 409,
+  `no-context` 409, `io` 500, `body-too-large` 413) and a client-side dictionary that turns each code
+  into the sentence a user reads.
+- CSS grouped per surface, one rule per line, with consistent `property: value;` formatting.
+
+### Removed
+
+- `.host-load.log` and its `.gitignore` rule: the diagnostic channel it belonged to no longer exists.
 
 ## [1.0.0] — 2026-11-10
 
@@ -45,6 +94,10 @@ session's committed log and deleted when its tab closes.
 
 ### Notes
 
+- Renamed from `@local/dsh-side-chat` to **`@aixineiar/dsh-side-chat`** (the unscoped names
+  `dsh-side-chat` / `dsh-plugin-side-chat` were already taken on npm) and published under that name.
+- Dropped `"private": true`, added `engines.dsh` (`^0.2.2-rc.1`) so an incompatible host refuses the
+  install before writing anything, and `prepublishOnly` runs the boot simulation.
 - Read quota is per model step, not per answer; the mode text states exactly that.
 - The client half is a single file: the DSH client loader cannot synchronously require sibling
   `client*.js` outputs, and this project has no build step.

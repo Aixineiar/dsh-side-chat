@@ -4,12 +4,14 @@
  * A side chat is a throwaway thread seeded from the main Session's committed
  * log at the moment the sidebar card is used. Four properties define it:
  *
- * 1. **Invisible.** The child keeps an ordinary origin but a seeded header; a
+ * 1. **Temporary.** The child keeps an ordinary origin but a seeded header; a
  *    `subagent` origin would force the durable parent address, which drops the
  *    native model picker and routes answers back into the main Session. The
- *    thread stays out of every Session list by being deleted when its tab
- *    closes (and by the boot sweep). Its injected boundary message — not its
- *    title — is the durable owner mark.
+ *    thread therefore *is* a normal catalog entry while it lives — it shows up
+ *    in the Session catalog under the `侧边 · ` title prefix — and stops
+ *    existing when its tab closes (the tab handler disposes it and deletes its
+ *    artifact) or when the boot sweep finds it orphaned. Its injected boundary
+ *    message — not its title — is the durable owner mark.
  * 2. **Inherited.** The seed copies the parent log through its newest committed
  *    event (including the committed steps of a turn still running) and closes
  *    the open tail with synthetic results so providers accept it.
@@ -29,19 +31,27 @@
  * first question, and a system-prompt section registered last (order 1e6) that
  * settles the conflict with the inherited general rules. Both render themselves
  * from `prompt.js`, which is the only place a mode rule is written.
+ *
+ * The prompt itself is not edited from here: the hosting packages render each
+ * `tool:*` paragraph against the viewing scope's tool view, so a masked tool's
+ * paragraph is already empty for a restricted side chat.
  */
 
 import { basename, dirname } from 'node:path';
 import { rm, rmdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
-import { BOUNDARY_SOURCE, DEFAULT_MODE, DENIAL, normalizeMode, sectionKeep, sectionText } from './prompt.js';
+import { BOUNDARY_SOURCE, DEFAULT_MODE, DENIAL, normalizeMode, sectionText } from './prompt.js';
 import { buildSeed } from './seed.js';
 import { createToolPolicy } from './tools.js';
-import { createRouteHandler, ROUTE } from './routes.js';
+import { createRouteHandler, ERROR, ROUTE, SideChatError } from './routes.js';
 import { createLifecycle } from './lifecycle.js';
 
-/** Title prefix that marks a side chat in the Session lists (display only). */
+/**
+ * Title prefix a live side chat carries in the Session catalog and every list
+ * rendered from it. Display only: ownership is proved by the injected boundary
+ * message, never by this title.
+ */
 const MARKER = '侧边 · ';
 
 /** Tools `read` mode may still call: workspace and conversation reading only. */
@@ -64,25 +74,39 @@ const READ_ALLOW = [
 export const inject = ['tools', 'systemPrompt', 'webServer'];
 
 /**
- * Normalize one deployment value into a non-empty string list.
+ * Read one deployment name list. A declaration that is not a list of non-empty
+ * strings is refused instead of being dropped: silently falling back to the
+ * default would widen the read-only boundary the operator meant to narrow.
  * @param value - declared config value.
- * @param fallback - value used when the declaration is absent or empty.
+ * @param field - config key, for the error message.
+ * @param fallback - value used when the key is absent.
  * @returns the effective string list.
  */
-function stringList(value, fallback) {
-  if (!Array.isArray(value)) return [...fallback];
-  const items = value.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
-  return items.length === 0 ? [...fallback] : items;
+function nameList(value, field, fallback) {
+  if (value === undefined || value === null) return [...fallback];
+  if (!Array.isArray(value)) {
+    throw new TypeError(`side-chat: config "${field}" must be a list of tool names, got ${typeof value}`);
+  }
+  const items = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new TypeError(`side-chat: config "${field}" must hold non-empty tool names`);
+    }
+    items.push(item.trim());
+  }
+  return items;
 }
 
 /**
  * @param ctx - Host plugin context.
- * @param config - bundle row config.
+ * @param config - bundle row config. A malformed `allow`/`deny` throws here, so
+ *   the deployment refuses to activate instead of running with the default
+ *   read-only list it never asked for.
  */
 export function apply(ctx, config = {}) {
   const settings = config ?? {};
-  const allow = new Set(stringList(settings.allow, READ_ALLOW));
-  const deny = new Set(stringList(settings.deny, []));
+  const allow = new Set(nameList(settings.allow, 'allow', READ_ALLOW));
+  const deny = new Set(nameList(settings.deny, 'deny', []));
 
   /** Side chats this plugin created: child id -> `{ mode, cwd, dispose }`. */
   const sideChats = new Map();
@@ -261,6 +285,16 @@ export function apply(ctx, config = {}) {
     );
   }
 
+  /**
+   * Drop every unmaskable report of one closed thread, so a page that opens and
+   * closes thousands of threads does not keep one entry per (thread, tool).
+   * @param sessionId - the side chat that no longer exists.
+   */
+  function forgetUnmaskable(sessionId) {
+    const prefix = `${sessionId}|`;
+    for (const key of reportedUnmaskable) if (key.startsWith(prefix)) reportedUnmaskable.delete(key);
+  }
+
   const policy = createToolPolicy({ ctx, allow, denied, sideChats, modeOf, isSideChat, reportUnmaskable });
   const { attach, release, restrictionFor, allowedToolsFor, liveAgent, scheduleRestrictionRefresh } = policy;
 
@@ -275,6 +309,7 @@ export function apply(ctx, config = {}) {
     release,
     liveAgent,
     scheduleRestrictionRefresh,
+    forgetUnmaskable,
   });
   const readQuota = lifecycle.readQuota;
   const currentStepKey = lifecycle.currentStepKey;
@@ -283,8 +318,8 @@ export function apply(ctx, config = {}) {
 
   /**
    * The preset the main Session runs now. `header.agentPreset` is frozen at
-   * creation, so the registry projection is the only current answer; `null`
-   * means "no preset recorded" and is passed on as `undefined`.
+   * creation, so the preset registry's projection is the only current answer;
+   * `null` means "no preset recorded" and is passed on as `undefined`.
    * @param session - the main Session.
    * @returns the preset id, or undefined when the Session records none.
    */
@@ -298,28 +333,19 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       ctx.logger?.warn?.(`side-chat: cannot read the preset of "${String(session?.id)}": ${String(error)}`);
     }
-    try {
-      const controller = ctx.get('sessionController');
-      if (typeof controller?.presetForSession === 'function') return controller.presetForSession(session);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: cannot read the preset of "${String(session?.id)}": ${String(error)}`);
-    }
     return session?.header?.agentPreset;
   }
 
   /**
-   * Compose the child's preset mounting the same way the Session controller
-   * does, so the side chat keeps the main Session's preset and model controls.
+   * Compose the child's preset the way the Session controller's own agent
+   * controller does: resolve the id, then mount it into the new Agent's context
+   * before publication. The controller's `composeAgent` helper is not part of
+   * the `sessionController` service (it lives on its internal agent
+   * controller), so this is the same two steps performed locally.
    * @param presetId - the main Session's preset, when it recorded one.
    * @returns preset identity plus a pre-publication setup callback.
    */
   async function compose(presetId) {
-    try {
-      const controller = ctx.get('sessionController');
-      if (typeof controller?.composeAgent === 'function') return await controller.composeAgent(presetId);
-    } catch (error) {
-      ctx.logger?.warn?.(`side-chat: session controller composition unavailable: ${String(error)}`);
-    }
     try {
       const presets = ctx.get('agentPresets');
       if (presets !== undefined) {
@@ -338,9 +364,11 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Resolve one thread's persisted artifact path. `locate` is a backend
-   * convenience, not part of the seam contract, so an unavailable or
-   * empty answer falls back to the backend's own listing.
+   * Resolve one thread's persisted artifact path. `stat()` is the contract
+   * member that reports the artifact this process actually stored, so it is
+   * asked first; `locate()` is a backend convenience that computes the path
+   * without touching the filesystem, and `list()` is the last resort because it
+   * enumerates every stored Session.
    * @param childId - the side-chat Session.
    * @param cwd - the directory the artifact was filed under.
    * @returns the artifact path, or undefined when the backend keeps none.
@@ -348,6 +376,13 @@ export function apply(ctx, config = {}) {
   async function artifactPath(childId, cwd) {
     const persistence = ctx.get('sessionPersistence');
     if (persistence === undefined) return undefined;
+    try {
+      const snapshot = await persistence.stat?.(childId);
+      const path = snapshot?.location?.path;
+      if (typeof path === 'string' && path !== '') return path;
+    } catch (error) {
+      ctx.logger?.warn?.(`side-chat: cannot stat the artifact of "${childId}": ${String(error)}`);
+    }
     try {
       const located = persistence.locate?.({ id: childId, ...(cwd === undefined ? {} : { cwd: cwd }) });
       if (typeof located?.path === 'string' && located.path !== '') return located.path;
@@ -446,16 +481,16 @@ export function apply(ctx, config = {}) {
    * Close one side chat: prove the Session is a thread this plugin owns, dispose
    * the Agent, then remove the artifact from disk. Nothing is archived and
    * nothing is attached to a Workspace, so the thread cannot be found again in
-   * any list. The answer is honest: a refused close reports itself, a failed
+   * any list. The answer is honest: a refused close names the code, a failed
    * dispose keeps its teardown handle (so the retry can still finish) and leaves
    * the log on disk.
    * @param payload - `{ childId }` from the Client half.
-   * @returns acknowledgement of an idempotent close, or a refusal.
+   * @returns acknowledgement of an idempotent close, or a refusal with its code.
    */
   async function closeThread(payload) {
     const childId = typeof payload.childId === 'string' ? payload.childId : '';
-    if (childId === '') throw new Error('缺少侧边对话标识');
-    if (!(await ownsThread(childId))) return { closed: false, reason: 'not-owned' };
+    if (childId === '') throw new SideChatError(ERROR.badRequest, 'childId is required', { field: 'childId' });
+    if (!(await ownsThread(childId))) return { closed: false, reason: ERROR.notOwned };
     const entry = sideChats.get(childId);
     const live = liveAgent(childId);
     const disposer =
@@ -465,12 +500,13 @@ export function apply(ctx, config = {}) {
         await disposer();
       } catch (error) {
         // Keep the map entry: the Client retries, and the retry needs a handle.
-        throw new Error(`释放会话失败：${error instanceof Error ? error.message : String(error)}`);
+        throw new SideChatError(ERROR.io, `dispose failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     sideChats.delete(childId);
     forget(childId);
     release(childId);
+    forgetUnmaskable(childId);
     const remaining = liveAgent(childId);
     if (remaining !== undefined) {
       try {
@@ -480,8 +516,38 @@ export function apply(ctx, config = {}) {
       }
     }
     const removed = await discardArtifact(childId, entry?.cwd ?? remaining?.session?.header?.cwd);
-    if (!removed) throw new Error('删除会话文件失败');
+    if (!removed) throw new SideChatError(ERROR.io, 'artifact deletion failed', { childId: childId });
     return { closed: true };
+  }
+
+  /** The largest single text block the control route accepts from the composer. */
+  const MAX_TEXT_CHARS = 200_000;
+
+  /** The largest number of content blocks the control route accepts in one prompt. */
+  const MAX_BLOCKS = 64;
+
+  /**
+   * Validate one prompt block against the Host's wire `PromptContentPart` shape.
+   * The generic Session command validates this with its own schema; a block that
+   * reaches the log malformed makes the Session unreadable on replay, so nothing
+   * outside the three known shapes is persisted.
+   * @param block - one candidate block from the composer.
+   * @returns the admitted block, or undefined when the shape is not accepted.
+   */
+  function admittedBlock(block) {
+    if (block === null || typeof block !== 'object') return undefined;
+    if (block.type === 'text') {
+      if (typeof block.text !== 'string' || block.text.length > MAX_TEXT_CHARS) return undefined;
+      return { type: 'text', text: block.text };
+    }
+    // An attachment already promoted to its durable reference by a Host-aware
+    // caller is the only attachment form this route may persist: an encoded
+    // image or an upload receipt must be admitted by the Host first, and this
+    // route has no upload session to admit against.
+    if ((block.type === 'image' || block.type === 'file') && block.attachment !== null && typeof block.attachment === 'object') {
+      return { type: block.type, attachment: block.attachment };
+    }
+    return undefined;
   }
 
   /**
@@ -491,15 +557,28 @@ export function apply(ctx, config = {}) {
    * touches the subagent runtime — the answer therefore stays in the side thread
    * instead of returning to the main Session.
    * @param payload - `{ childId, content, mode?, requestId?, clientTimeZone? }`.
-   * @returns the accepted message identity.
+   * @returns the accepted message identity and how many blocks were dropped.
    */
   async function promptThread(payload) {
     const childId = typeof payload.childId === 'string' ? payload.childId : '';
-    if (childId === '') throw new Error('缺少侧边对话标识');
+    if (childId === '') throw new SideChatError(ERROR.badRequest, 'childId is required', { field: 'childId' });
     const agent = liveAgent(childId);
-    if (agent === undefined) throw new Error('侧边对话已结束');
-    const content = Array.isArray(payload.content) ? payload.content.filter((block) => block !== null && typeof block === 'object') : [];
-    if (content.length === 0) throw new Error('消息内容为空');
+    if (agent === undefined) throw new SideChatError(ERROR.agentGone, 'the side chat has no live agent', { childId: childId });
+    const declared = Array.isArray(payload.content) ? payload.content : [];
+    const raw = declared.slice(0, MAX_BLOCKS);
+    const content = [];
+    let dropped = declared.length - raw.length;
+    for (const block of raw) {
+      const admitted = admittedBlock(block);
+      if (admitted === undefined) dropped += 1;
+      else content.push(admitted);
+    }
+    if (content.length === 0) {
+      throw new SideChatError(ERROR.badRequest, 'no acceptable content block', { dropped: dropped });
+    }
+    if (dropped > 0) {
+      ctx.logger?.warn?.(`side-chat: dropped ${dropped} unsupported content block(s) for "${childId}"`);
+    }
     const message = {
       id: randomUUID(),
       role: 'user',
@@ -512,11 +591,12 @@ export function apply(ctx, config = {}) {
     };
     if (payload.mode === 'steer') agent.steer(message);
     else agent.followup(message);
-    return { accepted: true, messageId: message.id };
+    return { accepted: true, messageId: message.id, dropped: dropped };
   }
 
   /**
-   * Cancel the running turn of one side chat.
+   * Cancel the running turn of one side chat. Cancellation is idempotent: a
+   * thread that already finished has nothing left to stop.
    * @param payload - `{ childId }`.
    * @returns acknowledgement.
    */
@@ -536,83 +616,113 @@ export function apply(ctx, config = {}) {
   async function selectThreadModel(payload) {
     const childId = typeof payload.childId === 'string' ? payload.childId : '';
     const agent = childId === '' ? undefined : liveAgent(childId);
-    if (agent === undefined) throw new Error('侧边对话已结束');
     const selected = {
       provider: payload.provider,
       model: payload.model,
       ...(payload.reasoningEffort === undefined ? {} : { reasoningEffort: payload.reasoningEffort }),
     };
-    if (typeof selected.provider !== 'string' || typeof selected.model !== 'string') throw new Error('缺少模型标识');
+    if (typeof selected.provider !== 'string' || typeof selected.model !== 'string') {
+      throw new SideChatError(ERROR.badRequest, 'provider and model are required', { field: 'model' });
+    }
+    if (agent === undefined) throw new SideChatError(ERROR.agentGone, 'the side chat has no live agent', { childId: childId });
     try {
       await ctx.get('llm')?.resolveCallConfig?.(selected);
     } catch (error) {
-      throw new Error(`模型不可用：${error instanceof Error ? error.message : String(error)}`);
+      throw new SideChatError(ERROR.badRequest, `model unavailable: ${error instanceof Error ? error.message : String(error)}`, {
+        provider: selected.provider,
+        model: selected.model,
+      });
     }
     agent.model.select(selected);
     return { selected: { ...selected } };
   }
 
   /**
-   * Create one side chat: a hidden, continuable Session seeded from the main
-   * Session's log, marked with the title prefix, pinned with its descriptor,
-   * and then left cold so the native composer can drive it.
+   * The model selection a child inherits: the parent Agent's live choice, else
+   * the deployment default. The side chat never writes either of them back.
+   * @param parent - the main Session's Agent.
+   * @returns the `agentOptions` for `agents.create`.
+   */
+  function inheritedAgentOptions(parent) {
+    const defaults = ctx.get('agentDefaultModel')?.currentSelection?.() ?? {};
+    const options = {};
+    const provider = parent.options?.provider ?? defaults.provider;
+    const model = parent.options?.model ?? defaults.model;
+    if (provider !== undefined) options.provider = provider;
+    if (model !== undefined) options.model = model;
+    if (parent.options?.reasoningEffort !== undefined) options.reasoningEffort = parent.options.reasoningEffort;
+    return options;
+  }
+
+  /**
+   * The newest committed title of one Session log.
+   * @param events - the log, oldest first.
+   * @returns the title, or an empty string when the log records none.
+   */
+  function resolveTitle(events) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title.trim() !== '') {
+        return event.data.title.trim();
+      }
+    }
+    return '';
+  }
+
+  /**
+   * The child Session header. The ordinary origin is deliberate: only a
+   * `subagent` header is filtered out of the Session lists, but that header also
+   * forces the durable parent address — which breaks native history, drops the
+   * native model picker and routes answers back into the main Session. Native
+   * chat UI wins; the thread disappears by being deleted, not by being hidden.
+   * @param header - the main Session's header.
+   * @param composition - the composed preset identity.
+   * @returns the header fields `agents.create` accepts.
+   */
+  function childMeta(header, composition) {
+    return {
+      isSeeded: true,
+      ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+      ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
+    };
+  }
+
+  /**
+   * Create one side chat: a continuable Session seeded from the main Session's
+   * log, titled with the marker, and left cold so the native composer can drive
+   * it through this plugin's own route.
    * @param payload - `{ sessionId, mode? }` from the Client half.
    * @returns the child Session identity and the boundary it inherited.
    */
   async function openThread(payload) {
     const parentId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
-    if (parentId === '') throw new Error('缺少主会话标识');
-    const agents = ctx.get('agents');
+    if (parentId === '') throw new SideChatError(ERROR.badRequest, 'sessionId is required', { field: 'sessionId' });
     const parent = liveAgent(parentId);
-    if (parent === undefined) throw new Error('主会话未运行：先在左侧打开该会话，再点「侧边对话」');
+    if (parent === undefined) {
+      throw new SideChatError(ERROR.agentGone, 'the main session is not running', { sessionId: parentId });
+    }
     const mode = normalizeMode(payload.mode);
     const parentSession = parent.session;
     const events = parentSession.snapshotEvents();
-    const lastSeq = events.length === 0 ? -1 : events[events.length - 1].seq;
-    if (!Number.isSafeInteger(lastSeq) || lastSeq < 0) throw new Error('主会话还没有可继承的上下文');
     // The Host's newest committed seq is the only boundary that is true at the
     // instant this call runs; a Client-computed seq can lag the running turn.
-    const atSeq = lastSeq;
-    const seed = buildSeed(events, atSeq, mode);
-    const header = parentSession.header;
-    const composition = await compose(currentPresetOf(parentSession));
-    const defaults = ctx.get('agentDefaultModel')?.currentSelection?.() ?? {};
-    const agentOptions = {};
-    const provider = parent.options?.provider ?? defaults.provider;
-    const model = parent.options?.model ?? defaults.model;
-    if (provider !== undefined) agentOptions.provider = provider;
-    if (model !== undefined) agentOptions.model = model;
-    if (parent.options?.reasoningEffort !== undefined) agentOptions.reasoningEffort = parent.options.reasoningEffort;
-    let parentTitle = '';
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
-      if (event.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title.trim() !== '') {
-        parentTitle = event.data.title.trim();
-        break;
-      }
+    const atSeq = events.length === 0 ? -1 : events[events.length - 1].seq;
+    if (!Number.isSafeInteger(atSeq) || atSeq < 0) {
+      throw new SideChatError(ERROR.noContext, 'the main session has no committed event to inherit', { sessionId: parentId });
     }
-    const label = `${MARKER}${parentTitle === '' ? '主会话' : parentTitle}`;
+    const composition = await compose(currentPresetOf(parentSession));
+    const parentTitle = resolveTitle(events);
     const childId = `session-${randomUUID()}`;
-    const meta = {
-      isSeeded: true,
-      // Ordinary origin on purpose: only a `subagent` header is filtered out of
-      // the Session lists, but that header also forces the durable parent
-      // address — which breaks native history, drops the native model picker and
-      // routes answers back into the main Session. Native chat UI wins; the
-      // thread stays out of every list by being deleted when its tab closes.
-      ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
-      ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
-    };
-    const entry = { mode: mode, cwd: header.cwd, dispose: undefined };
+    const entry = { mode: mode, cwd: parentSession.header.cwd, dispose: undefined };
     sideChats.set(childId, entry);
     let handle;
     try {
-      handle = await agents.create({
+      handle = await ctx.get('agents').create({
         sessionId: childId,
-        seed: seed,
+        seed: buildSeed(events, atSeq, mode),
         inheritedEventCount: atSeq + 1,
-        meta: meta,
-        agentOptions: agentOptions,
+        meta: childMeta(parentSession.header, composition),
+        agentOptions: inheritedAgentOptions(parent),
         setup: composition.setup,
       });
     } catch (error) {
@@ -621,7 +731,7 @@ export function apply(ctx, config = {}) {
     }
     entry.dispose = () => handle.dispose();
     try {
-      ctx.get('sessionTitle')?.rename?.(handle.agent.session, label);
+      ctx.get('sessionTitle')?.rename?.(handle.agent.session, `${MARKER}${parentTitle === '' ? '主会话' : parentTitle}`);
     } catch (error) {
       ctx.logger?.warn?.(`side-chat: cannot pin "${childId}": ${String(error)}`);
     }
@@ -760,40 +870,13 @@ export function apply(ctx, config = {}) {
     };
   }, 'side-chat: read-only stance');
 
-  /**
-   * Tool usage paragraphs are registered globally by their owning plugins and
-   * are not filtered by the Agent's visible tool set. Drop the ones whose tool
-   * this side chat cannot call, so the prompt never describes a tool that the
-   * request does not advertise. The kept set is derived from the same closed
-   * list the mask and the mode text use, never from a hand-written list.
-   */
-  ctx.on(
-    'system-prompt/assemble',
-    async (assembly, context, next) => {
-      const agent = context?.agent;
-      let side = false;
-      try {
-        side = agent !== undefined && isSideChat(agent.session);
-      } catch {
-        side = false;
-      }
-      if (!side) return next();
-      const result = await next();
-      if (result === undefined || result === null) return result;
-      const mode = modeOf(agent.session);
-      if (mode === 'full' || !Array.isArray(result.sections)) return result;
-      const keep = sectionKeep(mode, allowedToolsFor(agent, mode));
-      if (keep === undefined) return result;
-      const sections = result.sections.filter((section) => {
-        const name = typeof section?.name === 'string' ? section.name : '';
-        if (!name.startsWith('tool:')) return true;
-        return keep.has(name);
-      });
-      if (sections.length === result.sections.length) return result;
-      return { ...result, sections: sections };
-    },
-    { prepend: true },
-  );
+  // Tool paragraphs are deliberately not edited here. Every hosting package
+  // renders its `tool:*` section against the viewing scope's tool view
+  // (`text: ({ scope }) => ctx.tools.get(name, scope) === undefined ? '' : …`),
+  // so a masked tool's paragraph is already empty for a restricted side chat.
+  // Rewriting `system-prompt/assemble` on top of that would delete other
+  // plugins' contributions for no gain, which the Host's extension-point rule
+  // forbids.
 
   lifecycle.install();
 }

@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  boot-sim:
-    name: boot simulation (node ${{ matrix.node }})
+  test:
+    name: tests (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -19,7 +19,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # The plugin has no dependencies and no build step: the check is the
-      # boot simulation, which loads both halves under stubs.
-      - name: Run the boot simulation
+      # The plugin has no dependencies and no build step: the checks are the
+      # boot simulation (both halves under stubs) and the Client interaction
+      # rules (resource coroutine, close recovery, guide routing, bridge teardown).
+      - name: Boot simulation
         run: node dev/boot-sim.mjs
+      - name: Client interaction tests
+        run: node --test dev/

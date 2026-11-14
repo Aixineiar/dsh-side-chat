@@ -1,5 +1,4 @@
-# Runtime diagnostics
-.host-load.log
+# Client crash reports written by the control route
 .client-error.log
 
 # Dependencies

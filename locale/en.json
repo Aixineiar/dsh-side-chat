@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Side chat",
-    "description": "Opens a temporary read-only side conversation in the right sidebar that inherits this session's context and reuses the main chat UI."
+    "description": "Opens a temporary side conversation in the right sidebar that inherits this session's context and reuses the main chat UI. Three modes: reply only / read-only / fully inherited; fully inherited has the main session's capabilities, including writing files and running commands."
   }
 }

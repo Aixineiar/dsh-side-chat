@@ -1,140 +1,30 @@
 /**
  * Local boot simulation for both halves of the side-chat bundle.
  *
- * The Client half loads under a stubbed ModuleLoader + Cordis-like context and
- * reports the first throw from `apply`. The Host half loads under a stubbed
- * context that records the tool mask, the injected boundary, the assembled
- * sections, and the seed, then asserts the three modes agree with themselves:
- * the closed list a prompt renders is the list the mask leaves callable, the
- * retained `tool:*` sections cover exactly the callable tools, the Agent's tool
- * view holds nothing a mask cannot reach, and the seed keeps every envelope
- * field of the source events. Diagnostic only: no Host package is imported.
+ * The Client half boots under `dev/harness.mjs` (browser stubs plus a scripted
+ * route) and reports the first throw from `apply`. The Host half loads under a
+ * stubbed context that records the tool mask, the injected boundary, the
+ * system-prompt section, the seed, and the route answers, then asserts:
+ * the closed list a prompt renders is the list the mask leaves callable, no
+ * visible tool escapes the mask, the seed keeps every envelope field of the
+ * source events, a malformed prompt never reaches the log, and every refusal
+ * leaves the route with a stable code. Diagnostic only: no Host package is
+ * imported.
  */
 
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
-const loaded = [];
-const disposers = [];
+import { bootClient } from './harness.mjs';
 
-globalThis.window = {
-  __ModuleLoader__: {
-    load(record) {
-      loaded.push(record);
-    },
-  },
-  sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
-  localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
-  innerWidth: 1280,
-  innerHeight: 800,
-  addEventListener: () => undefined,
-  removeEventListener: () => undefined,
-  setTimeout: (fn) => 0,
-  clearTimeout: () => undefined,
-};
-globalThis.sessionStorage = window.sessionStorage;
-globalThis.localStorage = window.localStorage;
-globalThis.performance = globalThis.performance ?? { timeOrigin: Date.now() };
-globalThis.document = {
-  baseURI: 'http://127.0.0.1:60005/',
-  head: { appendChild: () => undefined },
-  body: { appendChild: () => undefined },
-  createElement: () => ({ dataset: {}, style: {}, textContent: '', remove: () => undefined }),
-  addEventListener: () => undefined,
-  removeEventListener: () => undefined,
-};
-globalThis.fetch = async () => ({ ok: false, status: 501, json: async () => undefined });
-
-function makeSlot() {
-  return {
-    inject: (_name, cb) => cb(),
-    register: () => () => undefined,
-  };
-}
-
-function makeScope(ctx) {
-  return {
-    ...ctx,
-    effect: (cb) => {
-      const disposer = cb();
-      disposers.push(disposer);
-      return () => undefined;
-    },
-  };
-}
-
-const clientCtx = {
-  effect: (cb) => {
-    const disposer = cb();
-    disposers.push(disposer);
-    return () => undefined;
-  },
-  inject: (_services, cb) => cb(makeScope(clientCtx)),
-  get: () => undefined,
-  on: () => () => undefined,
-  logger: { warn: () => undefined, info: () => undefined },
-  locale: {
-    register: () => () => undefined,
-    bind: () => (key) => key,
-  },
-  slots: makeSlot(),
-  sessions: {
-    list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => undefined },
-    using: async () => undefined,
-    retain: () => ({ release: () => undefined }),
-    scope: () => ({ get: () => undefined }),
-  },
-  workspaces: { archiveSession: async () => undefined },
-  sidebarRight: {
-    openResource: () => undefined,
-    registerCloseHandler: () => () => undefined,
-  },
-  sidebarRightTabs: { register: () => () => undefined },
-  resources: { register: () => () => undefined },
-  remote: {},
-};
-
-const clientUrl = new URL('../client.js', import.meta.url).href;
-await import(clientUrl);
-
-const record = loaded[0];
-if (record === undefined) {
-  console.log('NO MODULE RECORDED');
-  process.exit(1);
-}
-
-const clientExports = record.factory((spec) => {
-  if (spec === 'react') {
-    const React = {
-      createElement: (type, props, ...children) => ({ type, props, children }),
-      Fragment: 'Fragment',
-      Component: class {},
-      useState: (value) => [typeof value === 'function' ? value() : value, () => undefined],
-      useEffect: () => undefined,
-      useLayoutEffect: () => undefined,
-      useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
-      useRef: () => ({ current: null }),
-      useMemo: (fn) => fn(),
-      useCallback: (fn) => fn,
-    };
-    return React;
-  }
-  if (spec === 'react-dom') return { createPortal: (node) => node };
-  if (spec === '@deepseek-ai/dsh-client-ui-primitives') return { Menu: () => null, Button: 'button', IconChevronDownOutlineRegular: () => null };
-  throw new Error(`unstubbed require: ${spec}`);
-});
-
-console.log('client exports:', Object.keys(clientExports));
-let failed = false;
-try {
-  clientExports.apply(clientCtx);
-  console.log('client APPLY OK');
-} catch (error) {
-  console.error('CLIENT APPLY THREW:', error && error.stack ? error.stack : error);
-  failed = true;
-}
+/** Boot the Client half once: a throwing entry fails the whole web boot. */
+const client = await bootClient();
+console.log('client exports:', Object.keys(client.exports));
+console.log(
+  `client captured: resources=${client.captured.resources.length} tab-types=${client.captured.tabs.length} style-tags=${client.captured.styles.length}`,
+);
 
 /* ------------------------------------------------------------------ *
  * Host half
@@ -167,65 +57,13 @@ const TOOL_NAMES = [
   'skill',
 ];
 
-/** Host `tool:*` paragraphs this fixture environment registers (assembly input). */
-const SECTION_NAMES = [
-  'tool:read',
-  'tool:write',
-  'tool:apply_patch',
-  'tool:edit',
-  'tool:glob',
-  'tool:grep',
-  'tool:web_search',
-  'tool:web_fetch',
-  'tool:session-query',
-];
-
-/**
- * The `tool:*` section names the hosting packages really register, read from
- * the installed host (0.2.2-rc.1): `dsh-tool-fs/lib/index.js:249` (`tool:read`,
- * plus `tool:write`/`tool:apply`/`tool:edit`), `dsh-tool-fs-search` (`tool:glob`,
- * `tool:grep`), `dsh-tool-web` (`:284` `tool:web_search`, `:762`
- * `tool:web_fetch`), `dsh-tool-session-query` (`tool:session-query`), and the
- * shell/job/goal scheduling packages for the write-side paragraphs.
+/*
+ * Tool paragraphs are not part of this half's contract any more: the hosting
+ * packages render each `tool:*` section against the viewing scope's tool view,
+ * so a masked tool's paragraph is already empty. The simulation asserts that no
+ * `system-prompt/assemble` listener is registered at all, instead of comparing
+ * a local section table with the host's names.
  */
-const HOST_SECTION_NAMES = [
-  'tool:apply',
-  'tool:bash',
-  'tool:edit',
-  'tool:glob',
-  'tool:goal',
-  'tool:grep',
-  'tool:jobs',
-  'tool:pty',
-  'tool:pwsh',
-  'tool:ralph',
-  'tool:read',
-  'tool:schedule',
-  'tool:session-query',
-  'tool:web_fetch',
-  'tool:web_search',
-  'tool:write',
-];
-
-/**
- * The paragraph that documents each tool, per the hosting packages — kept here
- * as an independent oracle so the assertion fails when the bundle's own table
- * drifts, instead of agreeing with it. `lsp` is absent on both sides: this host
- * registers no `lsp` tool and no `tool:lsp` paragraph.
- */
-const HOST_SECTION_OF = {
-  read: 'tool:read',
-  read_image: 'tool:read',
-  glob: 'tool:glob',
-  grep: 'tool:grep',
-  web_search: 'tool:web_search',
-  web_fetch: 'tool:web_fetch',
-  session_search: 'tool:session-query',
-  session_trace: 'tool:session-query',
-  session_event_read: 'tool:session-query',
-  session_event_search: 'tool:session-query',
-  session_event_trace: 'tool:session-query',
-};
 
 /** A main Session whose newest turn still holds an unanswered tool call. */
 function danglingEvents() {
@@ -318,18 +156,35 @@ async function openMode(hostExports, mode, options = {}) {
     route: undefined,
     seeds: [],
     disposed: 0,
+    follows: [],
+    steers: [],
     logs: { warn: [], error: [] },
   };
   const agentsById = new Map();
   const childTools = makeTools(TOOL_NAMES, options.ownTools ?? []);
   const parentTools = makeTools(TOOL_NAMES, []);
   const persistence = {
+    /** Ids passed to `stat()`: the contract member the close path must prefer. */
+    statCalls: [],
+    /** Metadata passed to the backend-only `locate()` helper. */
     locateCalls: [],
+    /** How often the close path fell back to a full listing. */
+    listCalls: 0,
+    async stat(id) {
+      persistence.statCalls.push(id);
+      return {
+        header: { id: id },
+        location: { kind: 'jsonl', path: join(tmpdir(), 'dsh-side-chat-sim', String(id), 'log.jsonl') },
+      };
+    },
     locate(meta) {
       persistence.locateCalls.push(meta);
       return { path: join(tmpdir(), 'dsh-side-chat-sim', String(meta.id), 'log.jsonl') };
     },
-    list: async () => [],
+    async list() {
+      persistence.listCalls += 1;
+      return [];
+    },
   };
   const agents = {
     get(id) {
@@ -360,9 +215,11 @@ async function openMode(hostExports, mode, options = {}) {
         },
         followup(input) {
           state.followed = input;
+          state.follows.push(input);
         },
         steer(input) {
           state.steered = input;
+          state.steers.push(input);
         },
         cancel() {},
         model: { select(selection) { state.selected = selection; } },
@@ -463,9 +320,19 @@ async function openMode(hostExports, mode, options = {}) {
 
   const services = {
     agents: agents,
+    // The controller's own composition helpers are *not* part of the
+    // `sessionController` service in the shipped host; the fixture still offers
+    // them (recording) so a regression that calls them again fails here.
     sessionController: {
+      composeCalls: 0,
+      presetCalls: 0,
       async composeAgent(presetId) {
+        services.sessionController.composeCalls += 1;
         return { agentPreset: presetId ?? 'default-preset', setup: () => undefined };
+      },
+      presetForSession() {
+        services.sessionController.presetCalls += 1;
+        return 'controller-preset';
       },
     },
     agentPresets: {
@@ -523,7 +390,7 @@ async function openMode(hostExports, mode, options = {}) {
       },
     },
   };
-  hostExports.apply(ctx, {});
+  hostExports.apply(ctx, options.config ?? {});
   state.ctx = ctx;
   state.childTools = childTools;
   state.parent = parent;
@@ -582,6 +449,9 @@ function check(ok, message) {
   checks.push({ ok: ok === true, message: message });
 }
 
+/** Set by any failure that is not an assertion, so the process exits non-zero. */
+let failed = false;
+
 const exportsArg = process.argv.indexOf('--export');
 const exportPath = exportsArg >= 0 ? process.argv[exportsArg + 1] : undefined;
 const dump = {};
@@ -617,25 +487,15 @@ for (const mode of ['reply', 'read', 'full']) {
     );
   }
 
-  // The retained paragraphs: exactly one per callable tool that has one.
-  const kept = new Set();
-  const assembly = { sections: SECTION_NAMES.map((sectionName) => ({ name: sectionName, text: 'x' })) };
-  const listener = state.listeners['system-prompt/assemble']?.[0];
-  if (listener !== undefined) {
-    const result = await listener(assembly, { agent: state.child }, async () => assembly);
-    if (result !== undefined && Array.isArray(result.sections)) for (const row of result.sections) kept.add(row.name);
-  }
-  if (mode === 'reply') {
-    check(kept.size === 0, `reply: no tool paragraph is kept (${[...kept].join(', ') || 'none'})`);
-  } else if (mode === 'read') {
-    const expected = new Set();
-    for (const name of allowed ?? []) if (HOST_SECTION_OF[name] !== undefined) expected.add(HOST_SECTION_OF[name]);
-    for (const name of expected) check(kept.has(name), `read: a callable tool keeps its paragraph (${name})`);
-    for (const name of kept) {
-      const documented = Object.keys(HOST_SECTION_OF).filter((tool) => HOST_SECTION_OF[tool] === name);
-      check(documented.some((tool) => (allowed ?? []).includes(tool)), `read: a masked tool has no paragraph (${name})`);
-    }
-  }
+  // The prompt is not rewritten from this plugin: the hosting packages already
+  // render each `tool:*` section against the viewing scope's tool view, and the
+  // controller's own composition helpers are not part of its service.
+  check(
+    (state.listeners['system-prompt/assemble'] ?? []).length === 0,
+    `${mode}: no system-prompt/assemble listener is registered`,
+  );
+  check(state.ctx.get('sessionController').composeCalls === 0, `${mode}: the controller's composeAgent is not used`);
+  check(state.ctx.get('sessionController').presetCalls === 0, `${mode}: the controller's presetForSession is not used`);
 
   // No visible tool may escape the mask.
   const view = state.childTools.view();
@@ -701,7 +561,6 @@ for (const mode of ['reply', 'read', 'full']) {
   dump[mode] = {
     closedList: rendered,
     maskAllowed: allowed,
-    sectionsKept: [...kept],
     boundary: boundary,
     section: sectionText,
   };
@@ -745,7 +604,11 @@ check(
   foreign.envelope?.ok === true && foreign.envelope.value.closed === false,
   `close: a foreign Session is refused (${JSON.stringify(foreign.envelope)})`,
 );
-check(foreignRun.persistence.locateCalls.length === 0, 'close: a refused close touches no artifact');
+check(
+  foreign.envelope?.value?.reason === 'side-chat/not-owned',
+  `close: the refusal carries a stable code (${String(foreign.envelope?.value?.reason)})`,
+);
+check(foreignRun.persistence.statCalls.length === 0, 'close: a refused close touches no artifact');
 
 const ownedRun = await openMode(hostExports, 'read');
 const ownedId = ownedRun.open.envelope.value.childId;
@@ -754,26 +617,38 @@ check(
   ownedClose.envelope?.ok === true && ownedClose.envelope.value.closed === true,
   `close: an owned thread closes (${JSON.stringify(ownedClose.envelope)})`,
 );
-check(
-  ownedRun.persistence.locateCalls.some((meta) => meta.id === ownedId),
-  'close: the owned artifact is located for deletion',
-);
+check(ownedRun.persistence.statCalls.includes(ownedId), 'close: the artifact is resolved through stat()');
+check(ownedRun.persistence.listCalls === 0, 'close: a close never falls back to a full listing');
 
 // A dispose that fails keeps its handle and leaves the log alone.
 const retryRun = await openMode(hostExports, 'read', { disposeFails: 1 });
 const retryId = retryRun.open.envelope.value.childId;
 const firstClose = await callRoute(retryRun, 'close', { childId: retryId });
 check(
-  firstClose.envelope?.ok === false && String(firstClose.envelope?.error?.message ?? '').includes('释放会话失败'),
-  `close: a failed dispose is reported (${JSON.stringify(firstClose.envelope)})`,
+  firstClose.envelope?.ok === false && firstClose.envelope?.error?.code === 'side-chat/io',
+  `close: a failed dispose is reported as retryable io (${JSON.stringify(firstClose.envelope)})`,
 );
-check(retryRun.persistence.locateCalls.length === 0, 'close: a failed dispose leaves the artifact alone');
+check(retryRun.persistence.statCalls.length === 0, 'close: a failed dispose leaves the artifact alone');
 const secondClose = await callRoute(retryRun, 'close', { childId: retryId });
 check(
   secondClose.envelope?.ok === true && secondClose.envelope.value.closed === true,
   `close: the retry still has a teardown handle (${JSON.stringify(secondClose.envelope)})`,
 );
 dump.close = { foreign: foreign.envelope, owned: ownedClose.envelope, first: firstClose.envelope, second: secondClose.envelope };
+
+// A malformed control request answers with a 4xx and its own code, so the Client
+// can tell "do not retry" from "retry later".
+const badRequest = await callRoute(ownedRun, 'close', {});
+check(
+  badRequest.status === 400 && badRequest.envelope?.error?.code === 'side-chat/bad-request',
+  `route: a missing id answers 400 (${badRequest.status} ${JSON.stringify(badRequest.envelope)})`,
+);
+const unknownAction = await callRoute(ownedRun, 'nope', {});
+check(
+  unknownAction.status === 404 && unknownAction.envelope?.error?.code === 'side-chat/not-found',
+  `route: an unknown action answers 404 (${unknownAction.status})`,
+);
+dump.route = { badRequest: badRequest.envelope, unknownAction: unknownAction.envelope };
 
 // A thread that survived a plugin reload is adopted with a teardown handle.
 const adoptedRun = await openMode(hostExports, 'read', { adopted: true });
@@ -910,21 +785,90 @@ check(
   'read: the four host refusals share one stop rule',
 );
 
-// The bundle's tool -> paragraph table is compared with the host's real section
-// names, not with a local copy, so a rename in the hosting packages or a typo
-// here fails instead of agreeing with itself.
-for (const entry of Object.entries(promptTable.TOOL_SECTION_OF)) {
-  const tool = entry[0];
-  const sectionName = entry[1];
-  check(HOST_SECTION_NAMES.includes(sectionName), `${tool}: the mapped paragraph "${sectionName}" is a real host section`);
-  check(
-    HOST_SECTION_OF[tool] === sectionName,
-    `${tool}: the mapping matches the host (${String(HOST_SECTION_OF[tool])} vs ${sectionName})`,
-  );
-}
+// A malformed content block never reaches the log: the generic Session command
+// validates its prompt with a schema, and this route must not be the hole.
+const promptRun = await openMode(hostExports, 'read');
+const promptId = promptRun.open.envelope.value.childId;
+const validPrompt = await callRoute(promptRun, 'prompt', {
+  childId: promptId,
+  content: [{ type: 'text', text: 'hello' }],
+});
 check(
-  promptTable.TOOL_SECTION_OF.lsp === undefined && HOST_SECTION_OF.lsp === undefined,
-  'read: "lsp" has no host section on either side, so skipping it is intentional',
+  validPrompt.envelope?.ok === true && promptRun.follows.length === 1,
+  `prompt: a text block is accepted (${JSON.stringify(validPrompt.envelope)})`,
+);
+check(promptRun.follows[0]?.content?.[0]?.text === 'hello', 'prompt: the admitted block keeps its text');
+
+const wireImage = await callRoute(promptRun, 'prompt', {
+  childId: promptId,
+  content: [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }],
+});
+check(
+  wireImage.status === 400 && wireImage.envelope?.error?.code === 'side-chat/bad-request' && promptRun.follows.length === 1,
+  `prompt: an unadmitted attachment is refused and never queued (${wireImage.status} ${JSON.stringify(wireImage.envelope)})`,
+);
+
+const mixedPrompt = await callRoute(promptRun, 'prompt', {
+  childId: promptId,
+  content: [{ type: 'text', text: 'keep me' }, { foo: 1 }, { type: 'text', text: 7 }],
+});
+check(
+  mixedPrompt.envelope?.ok === true && mixedPrompt.envelope.value.dropped === 2 && promptRun.follows.length === 2,
+  `prompt: only the valid blocks are queued, the rest counted (${JSON.stringify(mixedPrompt.envelope)})`,
+);
+check(promptRun.follows[1]?.content?.length === 1, 'prompt: a dropped block is not persisted');
+
+const unknownThread = await callRoute(promptRun, 'prompt', { childId: 'session-nope', content: [{ type: 'text', text: 'x' }] });
+check(
+  unknownThread.status === 409 && unknownThread.envelope?.error?.code === 'side-chat/agent-gone',
+  `prompt: an ended thread answers 409 (${unknownThread.status})`,
+);
+dump.prompt = { valid: validPrompt.envelope, image: wireImage.envelope, mixed: mixedPrompt.envelope };
+
+// A malformed deployment config refuses activation instead of silently running
+// with the default allowlist.
+async function configRefusal(config) {
+  try {
+    await openMode(hostExports, 'read', { config: config });
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+const allowString = await configRefusal({ allow: 'read' });
+check(
+  allowString instanceof TypeError && String(allowString.message).includes('allow'),
+  `config: a string allowlist refuses activation (${allowString === undefined ? 'accepted' : allowString.message})`,
+);
+const denyNumber = await configRefusal({ deny: [1] });
+check(
+  denyNumber instanceof TypeError && String(denyNumber.message).includes('deny'),
+  `config: a non-string deny entry refuses activation (${denyNumber === undefined ? 'accepted' : denyNumber.message})`,
+);
+check(
+  (await configRefusal({ allow: ['read'], deny: ['web_search'] })) === undefined,
+  'config: a well-formed declaration still applies',
+);
+
+// The mode set exists once per half because the Client loader cannot import the
+// Host's module; this cross-check fails as soon as the two drift apart.
+const clientSource = await readFile(new URL('../client.js', import.meta.url), 'utf8');
+const modesMatch = /const MODES = \[([^\]]*)\]/.exec(clientSource);
+const clientModes =
+  modesMatch === null
+    ? []
+    : modesMatch[1]
+        .split(',')
+        .map((value) => value.trim().replace(/^'/, '').replace(/'$/, ''))
+        .filter((value) => value !== '');
+check(
+  JSON.stringify(clientModes) === JSON.stringify([...promptTable.MODE_IDS]),
+  `modes: the Client list equals the Host's (${JSON.stringify(clientModes)} vs ${JSON.stringify([...promptTable.MODE_IDS])})`,
+);
+const defaultMatch = /MODES\.indexOf\(value\) >= 0 \? value : '([^']+)'/.exec(clientSource);
+check(
+  defaultMatch !== null && defaultMatch[1] === promptTable.DEFAULT_MODE,
+  `modes: the Client default equals the Host's (${defaultMatch === null ? 'missing' : defaultMatch[1]} vs ${promptTable.DEFAULT_MODE})`,
 );
 
 if (exportPath !== undefined) {

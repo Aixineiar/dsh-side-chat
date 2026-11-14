@@ -1,18 +1,25 @@
 /**
  * Mode semantics for the side-chat bundle: the single source of every mode's
- * wording, its closed tool list, the guard's denial text, and the paragraph a
- * retained `tool:*` section documents.
+ * wording, its closed tool list, the guard's denial text, and the synthetic
+ * result that closes a tool call the inherited log left open.
  *
  * Everything here is pure: a caller passes the mode and the names the mask left
  * callable, and gets text back. No mode rule may be written anywhere else.
  */
 
+/** Every mode id, in menu order. The Host half's single source for the mode set. */
+export const MODE_IDS = Object.freeze(['reply', 'read', 'full']);
+
 /** Fallback when the Client half sends no mode. */
 export const DEFAULT_MODE = 'read';
 
-/** Normalized mode. */
+/**
+ * Normalize one mode id.
+ * @param value - any value a caller may send.
+ * @returns the value when it names a mode, the default otherwise.
+ */
 export function normalizeMode(value) {
-  return value === 'reply' || value === 'read' || value === 'full' ? value : DEFAULT_MODE;
+  return MODE_IDS.includes(value) ? value : DEFAULT_MODE;
 }
 
 /** Owner mark kind written into every injected boundary. */
@@ -144,27 +151,6 @@ export const DENIAL = {
     `拒绝说明：本会话的工具名单不可读，${mode === 'reply' ? '只回复模式没有任何工具' : '只读模式不执行任何调用'}。请立即停止所有工具调用，直接回答。`,
 };
 
-/**
- * Tool name -> the single usage paragraph that documents it. `read_image` is
- * documented by the `read` paragraph and the five session tools share one, so a
- * kept paragraph always matches the tools the request still advertises.
- * Exported so the boot simulation can compare this table with the `tool:*`
- * section names the hosting packages actually register, instead of with a copy.
- */
-export const TOOL_SECTION_OF = {
-  read: 'tool:read',
-  read_image: 'tool:read',
-  glob: 'tool:glob',
-  grep: 'tool:grep',
-  web_search: 'tool:web_search',
-  web_fetch: 'tool:web_fetch',
-  session_search: 'tool:session-query',
-  session_trace: 'tool:session-query',
-  session_event_read: 'tool:session-query',
-  session_event_search: 'tool:session-query',
-  session_event_trace: 'tool:session-query',
-};
-
 /** Synthetic closers for a call whose outcome the inherited log lost. */
 const SYNTHETIC_NEUTRAL = {
   started: '继承的历史记录了这个工具调用已经开始，但没有记录它的结果：按「结果未知」处理，不要重试，也不要继续这次调用。',
@@ -178,9 +164,9 @@ const SYNTHETIC_INHERITED = {
 };
 
 /**
- * The single source of mode semantics: identity, wording generators, retained
- * tool paragraphs, and synthetic-result text. Nothing else in this bundle may
- * spell a mode's rules out again.
+ * The single source of mode semantics: identity, wording generators, and
+ * synthetic-result text. Nothing else in this bundle may spell a mode's rules
+ * out again.
  */
 const MODES = {
   reply: {
@@ -217,7 +203,6 @@ ${FORM_RULE}
 第一动作是直接回答；继承历史里没有答案时写「继承历史里没有 X，需要 Y」，不要编造。
 本会话不执行修改任务：识别到修改请求时，按边界里的三段结构输出「修改建议 · 待主会话执行」并指回主会话，不声称完成。
 ${ARBITRATION_PLAIN}`,
-    sectionKeep: () => new Set(),
     synthetic: SYNTHETIC_NEUTRAL,
   },
   read: {
@@ -264,14 +249,6 @@ ${PROGRESS_RULE}
 缺信息时写「继承历史里没有 X，需要 Y」，不要编造。
 本会话不执行修改任务：识别到修改请求时，按边界里的三段结构输出「修改建议 · 待主会话执行」并指回主会话；${MODIFICATION_READ_HINT}
 ${ARBITRATION_PLAIN}`,
-    sectionKeep: (allowed) => {
-      const keep = new Set();
-      for (const name of allowed) {
-        const section = TOOL_SECTION_OF[name];
-        if (section !== undefined) keep.add(section);
-      }
-      return keep;
-    },
     synthetic: SYNTHETIC_NEUTRAL,
   },
   full: {
@@ -295,7 +272,6 @@ ${ISOLATION_FACT}
 ${FORM_RULE}
 需要改文件、执行命令、改配置等写操作时，先给计划，再只问一次「在本侧边会话执行，还是回主会话执行」；选回主会话就给「修改建议 · 待主会话执行」并停止写操作。
 ${ARBITRATION_PLAIN}`,
-    sectionKeep: () => undefined,
     synthetic: SYNTHETIC_INHERITED,
   },
 };
@@ -308,16 +284,6 @@ export function boundaryText(mode, allowed) {
 /** Render one mode's system-prompt section from the table above. */
 export function sectionText(mode, allowed) {
   return MODES[mode].section({ allowed: allowed });
-}
-
-/**
- * The `tool:*` paragraphs one mode keeps, or undefined when it keeps them all.
- * @param mode - the thread's mode.
- * @param allowed - the names the mask left callable.
- * @returns the kept section names.
- */
-export function sectionKeep(mode, allowed) {
-  return MODES[mode].sectionKeep(allowed ?? []);
 }
 
 /** The synthetic wording one mode writes for an unanswered tool call. */

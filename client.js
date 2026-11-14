@@ -8,19 +8,49 @@ window.__ModuleLoader__.load({
     /** Cached shared UI kit (`Menu`, `Button`, icons). */
     let primitivesCache;
     /**
+     * The shared-kit exports this plugin renders with.
+     * @type {ReadonlyArray<string>}
+     */
+    const PRIMITIVE_EXPORTS = ['Menu', 'Button', 'IconChevronDownOutlineRegular'];
+
+    /**
+     * Whether one kit export can be rendered as a component type: a function
+     * (function component or class), or an object carrying React's `$$typeof`
+     * marker (`memo` / `forwardRef` wrappers).
+     * @param value - one export of the shared kit.
+     * @returns whether the value is a component type.
+     */
+    function isComponentType(value) {
+      if (typeof value === 'function') return true;
+      return typeof value === 'object' && value !== null && typeof value.$$typeof === 'symbol';
+    }
+
+    /**
      * Resolve the shared UI kit the shipped sidebar cards use. Resolution is
      * lazy on purpose: a missing module must degrade to the local menu, never
      * fail the client entry (one failed entry aborts the whole web boot).
-     * @returns the module namespace, or null when it is unavailable.
+     *
+     * The kit is accepted only when every export this plugin uses is present as
+     * a component: a half-changed kit would otherwise mix a host `Menu` with a
+     * local chevron, and a changed prop signature would throw during render and
+     * blank the slot entry.
+     * @returns the module namespace, or null when it is unavailable or unusable.
      */
     function primitivesModule() {
       if (primitivesCache !== undefined) return primitivesCache;
+      let kit;
       try {
-        primitivesCache = loadModule('@deepseek-ai/dsh-client-ui-primitives');
+        kit = loadModule('@deepseek-ai/dsh-client-ui-primitives');
       } catch (error) {
         console.warn('side-chat: shared UI kit unavailable', error);
-        primitivesCache = null;
+        kit = undefined;
       }
+      const usable =
+        kit !== undefined && kit !== null && PRIMITIVE_EXPORTS.every((name) => isComponentType(kit[name]));
+      if (!usable && kit !== undefined && kit !== null) {
+        console.warn('side-chat: shared UI kit has an unexpected shape; using the local menu');
+      }
+      primitivesCache = usable ? kit : null;
       return primitivesCache;
     }
     const h = React.createElement;
@@ -44,24 +74,42 @@ window.__ModuleLoader__.load({
     const BOOT_KEY = 'dsh.side-chat.boot';
     /** Per-Session key proving a side chat was opened in this page lifetime. */
     const LIVE_PREFIX = 'dsh.side-chat.live.';
-    /** Session reference source label for side-chat consumers. */
+    /**
+     * Session-reference source label. `SessionReferenceSourceMap` is a
+     * declaration-merged interface: a consumer contributes its own key so its
+     * retentions stay attributable in `retainedBy`. Declared as data here
+     * because this half ships no type declarations.
+     */
     const SOURCE = 'sideChat';
     /** Page-document key holding the remembered mode. */
     const MODE_KEY = 'dsh.side-chat.mode';
-    /** The three supported modes, in menu order. */
+    /**
+     * The three supported modes, in menu order. The Host half reads the same set
+     * from `prompt.js`; this copy exists because the Client loader cannot import
+     * another module, and `dev/boot-sim.mjs` fails when the two drift apart.
+     */
     const MODES = ['reply', 'read', 'full'];
 
     const zh = {
       'tab.title': '侧边对话',
       'tab.sideTitle': '侧边 · {title}',
+      'tab.loading': '正在加载侧边对话…',
+      'tab.failed': '侧边对话加载失败',
+      'tab.unparsable': '无法解析侧边对话地址',
+      'tab.crashed': '侧边对话渲染失败',
+      'tab.noProvider': '侧边对话缺少 SessionProvider',
       'guide.title': '侧边对话',
       'guide.description': '继承当前会话上下文 · 只回复 / 只读 / 完全继承',
       'guide.status': '当前状态：{mode}',
       'guide.blank': '主会话还没有可继承的内容：先发一条消息，再打开侧边对话',
+      'guide.closeIssues': '{count} 条侧边对话未能关闭',
+      'guide.retryClose': '重试关闭',
+      'guide.retryingClose': '正在重试…',
       'mode.label': '侧边对话模式',
       'mode.reply': '只回复',
       'mode.read': '只读',
       'mode.full': '完全继承',
+      'mode.switchHint': '切换模式会新开一条侧边对话，并关闭当前这条',
       'button.label': '侧边对话',
       'button.tooltip': '在右侧栏打开侧边对话（继承本会话上下文，默认只读）',
       'launcher.opening': '正在打开侧边对话…',
@@ -73,20 +121,37 @@ window.__ModuleLoader__.load({
       'status.latest': '已是最新',
       'status.empty': '主会话还没有可继承的内容',
       'status.failed': '同步失败',
-      'status.closeFailed': '关闭失败',
+      'action.retry': '重试',
       'error.failed': '侧边对话打开失败',
+      'error.pending': '侧边会话尚未同步，请重试',
+      'error.badRequest': '请求参数有误，无法继续',
+      'error.notOwned': '这条侧边对话不属于本插件',
+      'error.agentGone': '这条侧边对话已结束',
+      'error.noContext': '主会话还没有可继承的内容',
+      'error.io': '文件操作失败，可稍后重试',
+      'error.offline': '无法连接宿主，请稍后重试',
+      'error.unknown': '操作失败',
     };
     const en = {
       'tab.title': 'Side chat',
       'tab.sideTitle': 'Side · {title}',
+      'tab.loading': 'Loading the side chat…',
+      'tab.failed': 'The side chat could not be loaded',
+      'tab.unparsable': 'The side-chat address could not be parsed',
+      'tab.crashed': 'The side chat failed to render',
+      'tab.noProvider': 'The side chat is missing its SessionProvider',
       'guide.title': 'New side chat',
       'guide.description': 'Inherits this conversation · reply only / read-only / full',
       'guide.status': 'Current mode: {mode}',
       'guide.blank': 'The main conversation has nothing to inherit yet: send a message first',
+      'guide.closeIssues': '{count} side chat(s) could not be closed',
+      'guide.retryClose': 'Retry closing',
+      'guide.retryingClose': 'Retrying…',
       'mode.label': 'Side-chat mode',
       'mode.reply': 'Reply only',
       'mode.read': 'Read-only',
       'mode.full': 'Fully inherited',
+      'mode.switchHint': 'Switching the mode opens a new side chat and closes this one',
       'button.label': 'Side chat',
       'button.tooltip': 'Open a side chat in the right sidebar (inherits this conversation, read-only)',
       'launcher.opening': 'Opening the side chat…',
@@ -98,56 +163,78 @@ window.__ModuleLoader__.load({
       'status.latest': 'Already latest',
       'status.empty': 'The main conversation has nothing to inherit yet',
       'status.failed': 'Sync failed',
-      'status.closeFailed': 'Close failed',
+      'action.retry': 'Retry',
       'error.failed': 'Could not open the side chat',
+      'error.pending': 'The side chat is not synced yet — please retry',
+      'error.badRequest': 'The request was rejected as malformed',
+      'error.notOwned': 'This side chat does not belong to this plugin',
+      'error.agentGone': 'This side chat has already ended',
+      'error.noContext': 'The main conversation has nothing to inherit yet',
+      'error.io': 'A file operation failed; retrying later may work',
+      'error.offline': 'The host is unreachable; retrying later may work',
+      'error.unknown': 'The action failed',
     };
 
+    /**
+     * Every rule this plugin adds, one selector per line and grouped by surface:
+     * base layout, status bar, header button, tab body and launcher, guide card,
+     * and the local menu fallback. Rules are emitted as written — no minifier —
+     * so the formatting here is the formatting the page gets.
+     */
     const CSS = [
-      '.dsh-side-chat-root{width:100%;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);}',
-      '.dsh-side-chat-status{flex:none;display:flex;align-items:center;gap:6px;min-width:0;padding:3px 10px;border-bottom:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;}',
-      '.dsh-side-chat-status-label{min-width:0;overflow:hidden;text-overflow:ellipsis;}',
-      '.dsh-side-chat-status-spacer{flex:1;}',
-      '.dsh-side-chat-link{border:0;background:0 0;padding:1px 5px;border-radius:4px;color:var(--dsw-alias-brand-primary);font:inherit;cursor:pointer;}',
-      '.dsh-side-chat-link:hover{background:var(--dsw-alias-bg-layer-2);}',
-      '.dsh-side-chat-link:disabled{color:var(--dsw-alias-label-secondary);cursor:default;}',
-      '.dsh-side-chat-body{flex:1;min-height:0;display:flex;flex-direction:column;}',
-      '.dsh-side-chat-body>*{min-height:0;}',
-      '.dsh-side-chat-button{border:0;background:0 0;padding:6px;border-radius:6px;color:var(--dsw-alias-label-secondary);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}',
-      '.dsh-side-chat-button:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.dsh-side-chat-button:disabled{opacity:.5;cursor:default;}',
-      '.dsh-side-chat-button[data-failed="true"]{color:var(--dsw-alias-state-error-primary);}',
-      '.dsh-side-chat-launcher{display:flex;flex-direction:column;gap:10px;box-sizing:border-box;height:100%;padding:22px 18px;overflow:auto;color:var(--dsw-alias-label-primary);}',
-      '.dsh-side-chat-launcher h3{margin:0;font-size:14px;line-height:20px;font-weight:600;}',
-      '.dsh-side-chat-launcher p{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);}',
-      '.dsh-side-chat-launcher button[data-primary="true"]{align-self:flex-start;margin-top:2px;border:0;border-radius:8px;padding:6px 14px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:12px;line-height:18px;cursor:pointer;}',
-      '.dsh-side-chat-launcher button[data-primary="true"]:disabled{opacity:.5;cursor:default;}',
-      '.dsh-side-chat-failure{color:var(--dsw-alias-state-error-primary)!important;}',
-      '.dsh-side-chat-tip-bubble{display:inline-flex;align-items:safe center;gap:8px;position:fixed;z-index:1100;width:max-content;box-sizing:border-box;max-width:min(50vw,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:3px 7px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-tooltip-bg);color:var(--dsw-static-neutral-bluish-00);font-size:13px;line-height:20px;white-space:pre-line;overflow-wrap:break-word;pointer-events:none;animation:dsh-side-chat-tip-in .15s var(--ds-ease-in-out);}',
-      '@keyframes dsh-side-chat-tip-in{from{opacity:0}to{opacity:1}}',
-      '@media (prefers-reduced-motion:reduce){.dsh-side-chat-tip-bubble{animation:none;}}',
-      '.dsh-side-chat-stack{margin:0;font-size:10px;line-height:14px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;color:var(--dsw-alias-label-secondary);}',
-      '.dsh-side-chat-guide{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsl-guide-entry-radius,var(--dsw-radius-xl));background:var(--dsw-alias-bg-layer-1);align-items:center;gap:14px;width:100%;min-height:56px;padding:14px 20px;display:flex;position:relative;overflow:hidden;}',
-      '@media (hover:hover){.dsh-side-chat-guide:hover{background:var(--dsw-alias-interactive-bg-hover);}}',
-      '.dsh-side-chat-guide-main{border:0;background:0 0;border-radius:0;width:100%;height:100%;position:absolute;inset:0;padding:0;cursor:pointer;}',
-      '.dsh-side-chat-guide-main:focus-visible{outline-offset:-2px;}',
-      '.dsh-side-chat-guide-main:disabled{cursor:default;}',
-      '.dsh-side-chat-guide-icon{width:26px;height:26px;color:var(--dsw-alias-label-secondary);pointer-events:none;flex:none;justify-content:center;align-items:center;display:flex;position:relative;}',
-      '.dsh-side-chat-guide-text{pointer-events:none;flex-direction:column;flex:1;gap:3px;min-width:0;display:flex;position:relative;}',
-      '.dsh-side-chat-guide-title-row{align-items:center;gap:4px;min-width:0;display:flex;}',
-      '.dsh-side-chat-guide-title{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:14px;line-height:1.4;overflow:hidden;}',
-      '.dsh-side-chat-guide-desc{color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;font-size:11px;line-height:1.4;overflow:hidden;}',
-      '.dsh-side-chat-guide-menu{pointer-events:auto;flex:none;display:flex;position:relative;}',
-      '.dsh-side-chat-guide-trigger{border:0;background:0 0;border-radius:4px;flex:none;width:20px;height:20px;padding:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--dsw-alias-label-tertiary);}',
-      '.dsh-side-chat-guide-trigger:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.dsh-side-chat-guide-trigger svg{width:14px;height:14px;}',
-      '.dsh-side-chat-menu{position:fixed;z-index:1100;min-width:190px;box-sizing:border-box;padding:4px;border-radius:10px;border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);box-shadow:0 8px 24px rgba(0,0,0,.24);display:flex;flex-direction:column;gap:2px;}',
-      '.dsh-side-chat-menu-item{border:0;background:0 0;text-align:left;display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;cursor:pointer;}',
-      '.dsh-side-chat-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover);}',
-      '.dsh-side-chat-menu-item[data-selected="true"]{color:var(--dsw-alias-brand-primary);}',
-      '.dsh-side-chat-menu-check{width:14px;height:14px;flex:none;display:inline-flex;align-items:center;justify-content:center;}',
-      '.dsh-side-chat-menu-text{display:flex;flex-direction:column;gap:1px;min-width:0;}',
-      '.dsh-side-chat-menu-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary);}',
-    ].join('');
+      /* --- base layout --- */
+      '.dsh-side-chat-root { width: 100%; min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); }',
+      '.dsh-side-chat-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }',
+      '.dsh-side-chat-body > * { min-height: 0; }',
+      '.dsh-side-chat-stack { margin: 0; font-size: 10px; line-height: 14px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; color: var(--dsw-alias-label-secondary); }',
+      '.dsh-side-chat-failure { color: var(--dsw-alias-state-error-primary) !important; }',
+      /* --- status bar --- */
+      '.dsh-side-chat-status { flex: none; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 10px; border-bottom: .5px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; overflow: hidden; }',
+      '.dsh-side-chat-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }',
+      '.dsh-side-chat-status-spacer { flex: 1; }',
+      '.dsh-side-chat-link { border: 0; background: 0 0; padding: 1px 5px; border-radius: 4px; color: var(--dsw-alias-brand-primary); font: inherit; cursor: pointer; }',
+      '.dsh-side-chat-link:hover { background: var(--dsw-alias-bg-layer-2); }',
+      '.dsh-side-chat-link:disabled { color: var(--dsw-alias-label-secondary); cursor: default; }',
+      /* --- header button --- */
+      '.dsh-side-chat-button { border: 0; background: 0 0; padding: 6px; border-radius: 6px; color: var(--dsw-alias-label-secondary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }',
+      '.dsh-side-chat-button:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }',
+      '.dsh-side-chat-button:disabled { opacity: .5; cursor: default; }',
+      '.dsh-side-chat-button[data-failed="true"] { color: var(--dsw-alias-state-error-primary); }',
+      '.dsh-side-chat-tip-bubble { display: inline-flex; align-items: safe center; gap: 8px; position: fixed; z-index: 1100; width: max-content; box-sizing: border-box; max-width: min(50vw, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; padding: 3px 7px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-tooltip-bg); color: var(--dsw-static-neutral-bluish-00); font-size: 13px; line-height: 20px; white-space: pre-line; overflow-wrap: break-word; pointer-events: none; animation: dsh-side-chat-tip-in .15s var(--ds-ease-in-out); }',
+      '@keyframes dsh-side-chat-tip-in { from { opacity: 0 } to { opacity: 1 } }',
+      '@media (prefers-reduced-motion: reduce) { .dsh-side-chat-tip-bubble { animation: none; } }',
+      /* --- tab body and launcher page --- */
+      '.dsh-side-chat-launcher { display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; height: 100%; padding: 22px 18px; overflow: auto; color: var(--dsw-alias-label-primary); }',
+      '.dsh-side-chat-launcher h3 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }',
+      '.dsh-side-chat-launcher p { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+      '.dsh-side-chat-launcher button[data-primary="true"] { align-self: flex-start; margin-top: 2px; border: 0; border-radius: 8px; padding: 6px 14px; background: var(--dsw-alias-brand-primary); color: #fff; font-size: 12px; line-height: 18px; cursor: pointer; }',
+      '.dsh-side-chat-launcher button[data-primary="true"]:disabled { opacity: .5; cursor: default; }',
+      /* --- guide card --- */
+      '.dsh-side-chat-guide { box-sizing: border-box; border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsl-guide-entry-radius, var(--dsw-radius-xl)); background: var(--dsw-alias-bg-layer-1); align-items: center; gap: 14px; width: 100%; min-height: 56px; padding: 14px 20px; display: flex; position: relative; overflow: hidden; }',
+      '@media (hover: hover) { .dsh-side-chat-guide:hover { background: var(--dsw-alias-interactive-bg-hover); } }',
+      '.dsh-side-chat-guide-main { border: 0; background: 0 0; border-radius: 0; width: 100%; height: 100%; position: absolute; inset: 0; padding: 0; cursor: pointer; }',
+      '.dsh-side-chat-guide-main:focus-visible { outline-offset: -2px; }',
+      '.dsh-side-chat-guide-main:disabled { cursor: default; }',
+      '.dsh-side-chat-guide-icon { width: 26px; height: 26px; color: var(--dsw-alias-label-secondary); pointer-events: none; flex: none; justify-content: center; align-items: center; display: flex; position: relative; }',
+      '.dsh-side-chat-guide-text { pointer-events: none; flex-direction: column; flex: 1; gap: 3px; min-width: 0; display: flex; position: relative; }',
+      '.dsh-side-chat-guide-title-row { align-items: center; gap: 4px; min-width: 0; display: flex; }',
+      '.dsh-side-chat-guide-title { color: var(--dsw-alias-label-primary); white-space: nowrap; text-overflow: ellipsis; font-size: 14px; line-height: 1.4; overflow: hidden; }',
+      '.dsh-side-chat-guide-desc { color: var(--dsw-alias-label-tertiary); white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 1.4; overflow: hidden; }',
+      '.dsh-side-chat-guide-menu { pointer-events: auto; flex: none; display: flex; position: relative; }',
+      '.dsh-side-chat-guide-trigger { border: 0; background: 0 0; border-radius: 4px; flex: none; width: 20px; height: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--dsw-alias-label-tertiary); }',
+      '.dsh-side-chat-guide-trigger:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }',
+      '.dsh-side-chat-guide-trigger svg { width: 14px; height: 14px; }',
+      '.dsh-side-chat-retry { pointer-events: auto; border: 0; background: 0 0; padding: 0 4px; color: var(--dsw-alias-brand-primary); font: inherit; font-size: 11px; line-height: inherit; cursor: pointer; text-decoration: underline; }',
+      '.dsh-side-chat-retry:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; text-decoration: none; }',
+      /* --- local menu fallback --- */
+      '.dsh-side-chat-menu { position: fixed; z-index: 1100; min-width: 190px; box-sizing: border-box; padding: 4px; border-radius: 10px; border: .5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); box-shadow: 0 8px 24px rgba(0, 0, 0, .24); display: flex; flex-direction: column; gap: 2px; }',
+      '.dsh-side-chat-menu-item { border: 0; background: 0 0; text-align: left; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; line-height: 18px; cursor: pointer; }',
+      '.dsh-side-chat-menu-item:hover { background: var(--dsw-alias-interactive-bg-hover); }',
+      '.dsh-side-chat-menu-item[data-selected="true"] { color: var(--dsw-alias-brand-primary); }',
+      '.dsh-side-chat-menu-check { width: 14px; height: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center; }',
+      '.dsh-side-chat-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }',
+      '.dsh-side-chat-menu-hint { font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-tertiary); }',
+    ].join('\n');
 
     /** Read one page-document value without throwing in restricted contexts. */
     function readStorage(area, key) {
@@ -201,19 +288,62 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One control-route failure with the Host's stable code. The wording the
+     * user sees is chosen here, from the dictionaries, not by the Host.
+     */
+    class HostError extends Error {
+      constructor(code, detail) {
+        super(detail === undefined || detail === '' ? code : detail);
+        this.name = 'HostError';
+        this.code = code;
+      }
+    }
+
+    /** Host failure code -> dictionary key holding the user's sentence. */
+    const ERROR_KEYS = {
+      'side-chat/bad-request': 'error.badRequest',
+      'side-chat/not-owned': 'error.notOwned',
+      'side-chat/agent-gone': 'error.agentGone',
+      'side-chat/no-context': 'error.noContext',
+      'side-chat/io': 'error.io',
+      'side-chat/offline': 'error.offline',
+      'side-chat/retain-pending': 'error.pending',
+    };
+
+    /**
+     * The sentence one failure becomes. A code the dictionaries know wins; a
+     * bare transport failure is reported as such; anything else falls back to
+     * the caller's own key. The Host's raw message never reaches the page.
+     * @param error - anything thrown by {@link callHost} or a local step.
+     * @param fallbackKey - dictionary key used when the code is unrecognized.
+     * @returns the localized sentence.
+     */
+    function errorText(error, fallbackKey) {
+      const code = error !== null && typeof error === 'object' && typeof error.code === 'string' ? error.code : '';
+      const key = ERROR_KEYS[code];
+      return t(key === undefined ? fallbackKey : key);
+    }
+
+    /**
      * Call one Host control action on the side-chat route.
      * @param action - route suffix.
      * @param payload - JSON body.
      * @returns the action's value.
+     * @throws {HostError} carrying the Host's stable code.
      */
     async function callHost(action, payload) {
       const base = hostHttpBase();
       const url = new URL('dsh-side-chat/api/' + action, base === '' ? 'http://dsh.invalid' : base);
-      const response = await fetch(url.href, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let response;
+      try {
+        response = await fetch(url.href, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        throw new HostError('side-chat/offline', message(error));
+      }
       let envelope;
       try {
         envelope = await response.json();
@@ -221,11 +351,15 @@ window.__ModuleLoader__.load({
         envelope = undefined;
       }
       if (envelope === undefined || envelope.ok !== true) {
+        const code =
+          envelope !== undefined && envelope.error !== undefined && typeof envelope.error.code === 'string'
+            ? envelope.error.code
+            : 'side-chat/transport';
         const detail =
           envelope !== undefined && envelope.error !== undefined && typeof envelope.error.message === 'string'
             ? envelope.error.message
             : 'HTTP ' + response.status;
-        throw new Error(detail);
+        throw new HostError(code, detail);
       }
       return envelope.value;
     }
@@ -372,33 +506,63 @@ window.__ModuleLoader__.load({
       /** main Session id -> (child Session id -> resource address) */
       const openByMain = new Map();
 
-      /** Close failures per parent Session, surfaced on the guide card. */
+      /**
+       * Close failures per main Session: child id -> the Host's failure code.
+       * One entry per thread the Host refused to close, so the guide card can
+       * offer a retry for exactly those threads instead of a text nobody can act
+       * on.
+       */
       const closeIssues = new Map();
       const closeIssueListeners = new Set();
+      /** Shared empty list, so a parent without failures keeps one identity. */
+      const NO_CLOSE_ISSUES = Object.freeze([]);
 
-      function noteCloseIssue(parentId, text) {
+      /** @returns `[{ childId, code }]` of one parent's failed closes. */
+      function snapshotCloseIssues(parentId) {
+        const group = closeIssues.get(parentId);
+        if (group === undefined) return NO_CLOSE_ISSUES;
+        return [...group.entries()].map(([childId, code]) => ({ childId: childId, code: code }));
+      }
+
+      function notifyCloseIssues() {
+        for (const listener of closeIssueListeners) listener();
+      }
+
+      function noteCloseIssue(parentId, childId, code) {
         if (parentId === undefined || parentId === '') return;
-        closeIssues.set(parentId, text);
-        for (const listener of closeIssueListeners) listener();
+        let group = closeIssues.get(parentId);
+        if (group === undefined) {
+          group = new Map();
+          closeIssues.set(parentId, group);
+        }
+        group.set(childId, code);
+        notifyCloseIssues();
       }
 
-      function clearCloseIssue(parentId) {
-        if (!closeIssues.delete(parentId)) return;
-        for (const listener of closeIssueListeners) listener();
+      function resolveCloseIssue(parentId, childId) {
+        const group = closeIssues.get(parentId);
+        if (group === undefined) return;
+        if (!group.delete(childId)) return;
+        if (group.size === 0) closeIssues.delete(parentId);
+        notifyCloseIssues();
       }
 
-      /** Live close-failure text for one parent Session. */
-      function useCloseIssue(parentId) {
-        const state = useState(() => closeIssues.get(parentId) || '');
-        const text = state[0];
-        const setText = state[1];
+      /**
+       * Live close failures of one parent Session.
+       * @param parentId - the main Session.
+       * @returns `[{ childId, code }]`.
+       */
+      function useCloseIssues(parentId) {
+        const state = useState(() => snapshotCloseIssues(parentId));
+        const issues = state[0];
+        const setIssues = state[1];
         useEffect(() => {
-          const listener = () => setText(closeIssues.get(parentId) || '');
+          const listener = () => setIssues(snapshotCloseIssues(parentId));
           closeIssueListeners.add(listener);
           listener();
           return () => closeIssueListeners.delete(listener);
         }, [parentId]);
-        return text;
+        return issues;
       }
 
       /** One Session-list source per main Session, shared across renders. */
@@ -426,10 +590,29 @@ window.__ModuleLoader__.load({
       const children = new Set();
 
       /**
+       * Undo closures for every installed Session-command patch. Installation is
+       * lazy (the remote namespace may not exist when the entry activates), so
+       * the teardown is registered once here and each patch appends its own undo.
+       */
+      const bridgeRestores = [];
+
+      ctx.effect(
+        () => () => {
+          for (const restore of bridgeRestores.splice(0)) restore();
+          bridged = false;
+        },
+        'side-chat: session-command bridge',
+      );
+
+      /**
        * Divert the Session commands a side chat cannot use. The Host keeps the
        * thread out of the subagent runtime on purpose, so its prompts must never
        * travel through subagent delivery: that path reports the answer back to
        * the main Session, which a side chat must never do.
+       *
+       * The patch owns its lifecycle: every wrapped method pushes an undo, and
+       * the undo only runs while the patched slot is still this plugin's wrapper,
+       * so a later patch by someone else is never clobbered.
        */
 
       function bridgeSessionCommands() {
@@ -448,12 +631,16 @@ window.__ModuleLoader__.load({
           const forward = (name, invoke) => {
             const original = namespace[name];
             if (typeof original !== 'function') return;
-            namespace[name] = function (request, signal) {
+            const wrapper = function (request, signal) {
               if (request === undefined || request === null || !children.has(request.sessionId)) {
                 return original.call(this, request, signal);
               }
               return invoke(request, signal).then(settle, fail);
             };
+            namespace[name] = wrapper;
+            bridgeRestores.push(() => {
+              if (namespace[name] === wrapper) namespace[name] = original;
+            });
           };
           forward('prompt', (request) =>
             callHost('prompt', {
@@ -497,7 +684,13 @@ window.__ModuleLoader__.load({
         const group = openByMain.get(parentId);
         if (group === undefined) return;
         group.delete(childId);
-        if (group.size === 0) openByMain.delete(parentId);
+        if (group.size === 0) {
+          openByMain.delete(parentId);
+          // No side chat of this main Session is open any more: drop the cached
+          // list source too, so a long page keeps no subscription per main
+          // Session it ever touched.
+          blankSources.delete(parentId);
+        }
       }
 
       function findOpen(parentId) {
@@ -515,28 +708,121 @@ window.__ModuleLoader__.load({
 
       /**
        * Close one side chat: the Host disposes the thread, so nothing is
-       * archived and nothing survives in any Workspace list. A failed close is
-       * retried, then reported on the guide card instead of being swallowed.
+       * archived and nothing survives in any Workspace list. A retryable failure
+       * (I/O or transport) is retried here; a refusal is not, because no amount
+       * of retrying turns a foreign Session into this plugin's thread. A retryable
+       * failure that outlives the retries is recorded per thread and offered back
+       * on the guide card, so a transient lock never leaves a thread nobody can
+       * reach.
        * @param childId - the side-chat Session.
        * @param parentId - its main Session, when known.
+       * @returns whether the thread is gone.
        */
       async function closeSide(childId, parentId) {
         children.delete(childId);
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        for (let attempt = 0; ; attempt += 1) {
           try {
-            await callHost('close', { childId: childId });
-            clearCloseIssue(parentId);
+            const result = await callHost('close', { childId: childId });
+            if (result !== undefined && result.closed === false) {
+              // The Host refused: not a thread this plugin owns.
+              console.warn('side-chat: the Host refused to close ' + childId + ' (' + String(result.reason) + ')');
+              resolveCloseIssue(parentId, childId);
+              return false;
+            }
+            resolveCloseIssue(parentId, childId);
             return true;
           } catch (error) {
-            if (attempt === 2) {
+            const code =
+              error !== null && typeof error === 'object' && typeof error.code === 'string' ? error.code : 'side-chat/io';
+            const retryable = code === 'side-chat/io' || code === 'side-chat/offline';
+            if (!retryable) {
               console.warn('side-chat: cannot close ' + childId, error);
-              noteCloseIssue(parentId, t('status.closeFailed') + '：' + message(error));
+              resolveCloseIssue(parentId, childId);
+              return false;
+            }
+            if (attempt >= 2) {
+              console.warn('side-chat: cannot close ' + childId, error);
+              noteCloseIssue(parentId, childId, code);
               return false;
             }
             await new Promise((resolve) => window.setTimeout(resolve, 600 * (attempt + 1)));
           }
         }
-        return false;
+      }
+
+      /**
+       * Retry every failed close of one main Session. The Host deliberately keeps
+       * the map entry and the log when a dispose fails, so a lock that has since
+       * been released finishes the job.
+       * @param parentId - the main Session.
+       */
+      async function retryCloseIssues(parentId) {
+        for (const issue of snapshotCloseIssues(parentId)) await closeSide(issue.childId, parentId);
+      }
+
+      /** Backoff between catalog refreshes while a new Session is not listed yet. */
+      const CATALOG_BACKOFF_MS = [200, 300, 400, 500, 600];
+
+      /**
+       * Resolve after one delay, or as soon as the tab is cancelled.
+       * @param ms - delay in milliseconds.
+       * @param signal - the tab's cancellation, when it has one.
+       * @returns completion.
+       */
+      function delay(ms, signal) {
+        if (signal === undefined || signal === null) return new Promise((resolve) => window.setTimeout(resolve, ms));
+        if (signal.aborted) return Promise.resolve();
+        return new Promise((resolve) => {
+          const timer = window.setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, ms);
+          const onAbort = () => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+      }
+
+      /** Whether the Client catalog already lists one Session. */
+      function catalogued(childId) {
+        return ctx.sessions.list.getSnapshot().byId[childId] !== undefined;
+      }
+
+      /**
+       * Retain one side-chat Session, waiting out the catalog race. `open`
+       * answers over HTTP while the catalog row arrives over the socket, so the
+       * first `retain` can legitimately see "unknown session": refresh the
+       * catalog and retry with backoff. Any other failure is rethrown at once,
+       * because refreshing cannot fix it.
+       * @param childId - the side-chat Session.
+       * @param signal - the tab's cancellation.
+       * @returns the retained Session reference.
+       */
+      async function retainSideChat(childId, signal) {
+        let lastError;
+        for (let attempt = 0; attempt <= CATALOG_BACKOFF_MS.length; attempt += 1) {
+          if (signal !== undefined && signal !== null && signal.aborted) {
+            throw new HostError('side-chat/offline', 'the tab was closed');
+          }
+          if (!catalogued(childId)) {
+            try {
+              await ctx.sessions.refresh();
+            } catch (error) {
+              console.warn('side-chat: catalog refresh failed', error);
+            }
+            if (attempt < CATALOG_BACKOFF_MS.length) await delay(CATALOG_BACKOFF_MS[attempt], signal);
+          }
+          try {
+            return ctx.sessions.retain(childId, { source: SOURCE, signal: signal });
+          } catch (error) {
+            lastError = error;
+            // A failure that is not the catalog gap will not heal by waiting.
+            if (catalogued(childId)) throw error;
+          }
+        }
+        throw new HostError('side-chat/retain-pending', message(lastError));
       }
 
       /**
@@ -577,9 +863,9 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Ask the Host for one side chat: a hidden, continuable Session seeded from
-       * the main Session's newest committed event, then return the resource
-       * address that opens it.
+       * Ask the Host for one side chat: a continuable Session seeded from the
+       * main Session's newest committed event, then return the resource address
+       * that opens it.
        * @param parentId - main Session to inherit.
        * @param knownSeq - already known boundary, when the caller has one.
        * @param mode - `reply`, `read`, or `full`; defaults to the remembered one.
@@ -597,9 +883,11 @@ window.__ModuleLoader__.load({
         try {
           created = await callHost('open', { sessionId: parentId, mode: chosen });
         } catch (error) {
-          throw new Error(t('error.failed') + ': ' + message(error));
+          throw error instanceof HostError ? error : new HostError('side-chat/io', message(error));
         }
-        if (created === undefined || typeof created.childId !== 'string') throw new Error(t('error.failed'));
+        if (created === undefined || typeof created.childId !== 'string') {
+          throw new HostError('side-chat/io', 'the Host answered open without a child id');
+        }
         const childId = created.childId;
         const childAtSeq = Number.isSafeInteger(created.atSeq)
           ? created.atSeq
@@ -717,7 +1005,7 @@ window.__ModuleLoader__.load({
               openResource(created.address);
             } catch (error) {
               console.warn('side-chat: open failed', error);
-              setFailure(message(error));
+              setFailure(errorText(error, 'error.failed'));
               window.setTimeout(() => setFailure(''), 5000);
             } finally {
               busyRef.current = false;
@@ -820,7 +1108,7 @@ window.__ModuleLoader__.load({
               setPhase('idle');
             } catch (error) {
               console.warn('side-chat: sync failed', error);
-              setFailure(message(error));
+              setFailure(errorText(error, 'error.io'));
               setPhase('failed');
               window.setTimeout(() => setPhase('idle'), 3000);
             }
@@ -889,7 +1177,7 @@ window.__ModuleLoader__.load({
           return h(
             'div',
             { className: 'dsh-side-chat-launcher' },
-            h('h3', {}, '侧边对话渲染失败'),
+            h('h3', {}, t('tab.crashed')),
             h('pre', { className: 'dsh-side-chat-stack' }, String((error && (error.stack || error.message)) || error)),
           );
         }
@@ -899,15 +1187,60 @@ window.__ModuleLoader__.load({
         return h(SideChatBoundary, null, h(SideChatTabBody, props));
       }
 
+      /**
+       * The resource-consuming half of the tab. It is mounted under a `key`, so
+       * the retry button can unmount and remount it: the resource registry
+       * restarts a provider coroutine when its last consumer leaves and a new one
+       * arrives, which is the retry hook it exposes.
+       */
+      function SideChatResourceView(props) {
+        const resource = props.useResource(props.contentId);
+        const value = resource.value;
+        if (value !== undefined) {
+          if (typeof props.SessionProvider !== 'function') {
+            return h(
+              'div',
+              { className: 'dsh-side-chat-launcher' },
+              h('h3', {}, t('tab.noProvider')),
+              h(
+                'pre',
+                { className: 'dsh-side-chat-stack' },
+                'slot 渲染器没有注入 SessionProvider：注册时必须声明一个非 root 子槽。',
+              ),
+            );
+          }
+          return h(
+            props.SessionProvider,
+            { session: value.reference },
+            h(SideChatConversation, { renderFactorySlot: props.renderFactorySlot }),
+          );
+        }
+        if (resource.status === 'failed') {
+          return h(
+            'div',
+            { className: 'dsh-side-chat-launcher' },
+            h('h3', {}, t('tab.failed')),
+            h('p', {}, errorText(resource.failure, 'tab.failed')),
+            h(
+              'button',
+              { type: 'button', className: 'dsh-side-chat-link', onClick: props.onRetry },
+              t('action.retry'),
+            ),
+          );
+        }
+        return h('div', { className: 'dsh-side-chat-launcher' }, h('p', {}, t('tab.loading')));
+      }
+
       function SideChatTabBody(props) {
-        const useResource = props.useResource;
         const useTabInfo = props.useTabInfo;
-        const SessionProvider = props.SessionProvider;
         const info = useTabInfo();
         const contentId = info.tab && info.tab.contentId;
         const parsed = parseSideChatAddress(contentId);
-        const resource = useResource(contentId);
         const actions = info.tab && info.tab.actions;
+        const attemptState = useState(0);
+        const attempt = attemptState[0];
+        const setAttempt = attemptState[1];
+        const childId = parsed === undefined ? '' : parsed.childId;
 
         useEffect(() => {
           if (parsed === undefined) return;
@@ -917,38 +1250,8 @@ window.__ModuleLoader__.load({
           forget(parsed.parentId, parsed.childId);
           void closeSide(parsed.childId, parsed.parentId);
           if (actions !== undefined && typeof actions.close === 'function') actions.close();
-        }, [parsed === undefined ? '' : parsed.childId]);
+        }, [childId]);
 
-        const value = resource.value;
-        const failureText =
-          resource.status === 'failed'
-            ? String((resource.failure && (resource.failure.message || resource.failure.code)) || resource.failure)
-            : '';
-        const contentNode =
-          value !== undefined
-            ? typeof SessionProvider === 'function'
-              ? h(
-                  SessionProvider,
-                  { session: value.reference },
-                  h(SideChatConversation, { renderFactorySlot: props.renderFactorySlot }),
-                )
-              : h(
-                  'div',
-                  { className: 'dsh-side-chat-launcher' },
-                  h('h3', {}, '侧边对话缺少 SessionProvider'),
-                  h(
-                    'pre',
-                    { className: 'dsh-side-chat-stack' },
-                    'slot 渲染器没有注入 SessionProvider：注册时必须声明一个非 root 子槽。',
-                  ),
-                )
-            : h(
-                'div',
-                { className: 'dsh-side-chat-launcher' },
-                h('p', {}, '正在加载侧边对话…'),
-                failureText === '' ? null : h('pre', { className: 'dsh-side-chat-stack' }, failureText),
-                parsed === undefined ? h('pre', { className: 'dsh-side-chat-stack' }, String(contentId)) : null,
-              );
         return h(
           'div',
           { className: 'dsh-side-chat-root', 'data-side-chat': '' },
@@ -956,14 +1259,27 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { className: 'dsh-side-chat-status' },
-                h('span', { className: 'dsh-side-chat-status-label' }, '无法解析侧边对话地址'),
+                h('span', { className: 'dsh-side-chat-status-label' }, t('tab.unparsable')),
               )
             : h(SideChatStatus, {
                 parsed: parsed,
                 tab: info.tab,
                 useSessions: props.useSessions,
               }),
-          h('div', { className: 'dsh-side-chat-body' }, contentNode),
+          h(
+            'div',
+            { className: 'dsh-side-chat-body' },
+            parsed === undefined
+              ? h('div', { className: 'dsh-side-chat-launcher' }, h('pre', { className: 'dsh-side-chat-stack' }, String(contentId)))
+              : h(SideChatResourceView, {
+                  key: childId + ':' + String(attempt),
+                  useResource: props.useResource,
+                  contentId: contentId,
+                  SessionProvider: props.SessionProvider,
+                  renderFactorySlot: props.renderFactorySlot,
+                  onRetry: () => setAttempt((value) => value + 1),
+                }),
+          ),
         );
       }
 
@@ -992,7 +1308,7 @@ window.__ModuleLoader__.load({
               }
             } catch (error) {
               console.warn('side-chat: launcher failed', error);
-              setFailure(message(error));
+              setFailure(errorText(error, 'error.failed'));
             }
           })();
         }, []);
@@ -1115,6 +1431,10 @@ window.__ModuleLoader__.load({
        * The right-sidebar guide card: the card itself starts a side chat with the
        * remembered mode, and the chevron beside its title opens the mode menu —
        * the same split-button shape the terminal card uses.
+       *
+       * The card also owns the only recovery entry for a close that failed: the
+       * Host keeps such a thread alive on purpose, so a retry has to be reachable
+       * from somewhere the user returns to.
        */
       function SideChatGuide(props) {
         const sessionId = props.sessionId;
@@ -1122,10 +1442,10 @@ window.__ModuleLoader__.load({
         const info = props.useTabInfo();
         // Shared UI kit; anything missing degrades to the local menu below.
         const kit = primitivesModule() ?? null;
-        const Menu = kit !== null && kit.Menu ? kit.Menu : LocalMenu;
-        const AnchorButton = kit !== null && kit.Button ? kit.Button : 'button';
-        const Chevron = kit !== null && kit.IconChevronDownOutlineRegular ? kit.IconChevronDownOutlineRegular : LocalChevron;
-        const closeIssue = useCloseIssue(sessionId);
+        const Menu = kit !== null ? kit.Menu : LocalMenu;
+        const AnchorButton = kit !== null ? kit.Button : 'button';
+        const Chevron = kit !== null ? kit.IconChevronDownOutlineRegular : LocalChevron;
+        const closeIssues = useCloseIssues(sessionId);
         const blank = useBlankSession(sessionId);
         const modeState = useState(() => storedMode());
         const mode = modeState[0];
@@ -1137,10 +1457,22 @@ window.__ModuleLoader__.load({
         const busy = busyState[0];
         const setBusy = busyState[1];
         const busyRef = useRef(false);
+        const retryingState = useState(false);
+        const retrying = retryingState[0];
+        const setRetrying = retryingState[1];
         const failureState = useState('');
         const failure = failureState[0];
         const setFailure = failureState[1];
-        const note = failure !== '' ? failure : blank ? t('guide.blank') : closeIssue;
+        const issuesText = closeIssues.length === 0 ? '' : label('guide.closeIssues', { count: closeIssues.length });
+        const statusText =
+          failure !== ''
+            ? failure
+            : blank
+              ? label('guide.blank')
+              : issuesText !== ''
+                ? issuesText
+                : label('guide.status', { mode: label('mode.' + mode) });
+        const note = open ? label('mode.switchHint') : statusText;
 
         const start = (chosen) => {
           if (busyRef.current || blank) return;
@@ -1150,7 +1482,6 @@ window.__ModuleLoader__.load({
           setMode(normalizeMode(chosen));
           setBusy(true);
           setFailure('');
-          clearCloseIssue(sessionId);
           void (async () => {
             try {
               const created = await createSideChat(sessionId, undefined, chosen);
@@ -1162,11 +1493,25 @@ window.__ModuleLoader__.load({
               }
             } catch (error) {
               console.warn('side-chat: guide start failed', error);
-              setFailure(message(error));
+              setFailure(errorText(error, 'error.failed'));
               window.setTimeout(() => setFailure(''), 6000);
             } finally {
               busyRef.current = false;
               setBusy(false);
+            }
+          })();
+        };
+
+        const retryClose = () => {
+          if (retrying) return;
+          setRetrying(true);
+          void (async () => {
+            try {
+              await retryCloseIssues(sessionId);
+            } catch (error) {
+              console.warn('side-chat: close retry failed', error);
+            } finally {
+              setRetrying(false);
             }
           })();
         };
@@ -1232,6 +1577,22 @@ window.__ModuleLoader__.load({
               { className: 'dsh-side-chat-guide-desc', 'aria-hidden': 'true' },
               note === '' ? label('guide.status', { mode: label('mode.' + mode) }) : note,
             ),
+            closeIssues.length === 0
+              ? null
+              : h(
+                  'span',
+                  { className: 'dsh-side-chat-guide-desc' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-side-chat-retry',
+                      disabled: retrying,
+                      onClick: retryClose,
+                    },
+                    retrying ? label('guide.retryingClose') : label('guide.retryClose'),
+                  ),
+                ),
           ),
         );
       }
@@ -1253,7 +1614,19 @@ window.__ModuleLoader__.load({
         }
         render() {
           if (this.state.error === null) return this.props.children;
-          return h('div', { className: 'dsh-side-chat-guide', role: 'presentation' });
+          // An empty div would drop the entry without a trace. Keep the card's
+          // shape so the user can see that this entry exists and failed.
+          return h(
+            'div',
+            { className: 'dsh-side-chat-guide', role: 'presentation' },
+            h('span', { className: 'dsh-side-chat-guide-icon', 'aria-hidden': 'true' }, h(SideChatGlyph)),
+            h(
+              'span',
+              { className: 'dsh-side-chat-guide-text' },
+              h('span', { className: 'dsh-side-chat-guide-title' }, t('guide.title')),
+              h('span', { className: 'dsh-side-chat-guide-desc' }, t('error.unknown')),
+            ),
+          );
         }
       }
 
@@ -1284,7 +1657,7 @@ window.__ModuleLoader__.load({
                 if (parsed === undefined) {
                   yield {
                     ok: false,
-                    error: { code: 'side-chat/bad-address', message: 'side-chat: invalid resource address "' + address + '"', details: {} },
+                    error: { code: 'side-chat/bad-address', message: 'invalid side-chat address', details: { address: String(address) } },
                   };
                   return;
                 }
@@ -1298,11 +1671,18 @@ window.__ModuleLoader__.load({
                   // The bridge above answers the commands this Session refuses;
                   // `ClientSessionReference` itself carries only `binding`, so the
                   // send always arrives through `remote.session.prompt`.
-                  reference = ctx.sessions.retain(parsed.childId, { source: SOURCE, signal: signal });
+                  reference = await retainSideChat(parsed.childId, signal);
                 } catch (error) {
                   yield {
                     ok: false,
-                    error: { code: 'side-chat/retain-failed', message: message(error), details: { sessionId: parsed.childId } },
+                    error: {
+                      code:
+                        error !== null && typeof error === 'object' && typeof error.code === 'string'
+                          ? error.code
+                          : 'side-chat/retain-pending',
+                      message: message(error),
+                      details: { sessionId: parsed.childId },
+                    },
                   };
                   return;
                 }

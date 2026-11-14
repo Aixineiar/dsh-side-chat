@@ -233,13 +233,9 @@ export function createToolPolicy(deps) {
   return {
     attach: attach,
     release: release,
-    refreshRestrictions: refreshRestrictions,
     scheduleRestrictionRefresh: scheduleRestrictionRefresh,
     restrictionFor: restrictionFor,
     allowedToolsFor: allowedToolsFor,
-    unmaskableNames: unmaskableNames,
-    toolViewOf: toolViewOf,
-    restrictableNames: restrictableNames,
     liveAgent: liveAgent,
   };
 }

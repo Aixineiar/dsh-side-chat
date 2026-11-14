@@ -6,7 +6,7 @@ them breaks the plugin's only real promise — that the mode you picked is the m
 ## Before you start
 
 - **Node ≥ 20**, no build step, no test runner, no dependencies. Everything runs on Node built-ins.
-- DSH **0.2.2-rc.1** is the host the code is written against. If you change a host contract call,
+- DSH **0.2.2-rc.3** is the host the code is written against. If you change a host contract call,
   check it against the installed host sources first (`node_modules/@deepseek-ai/dsh-*`).
 - To run the plugin for real you need a DSH profile that mounts it; see
   [README › 安装](README.md#安装).
@@ -14,8 +14,9 @@ them breaks the plugin's only real promise — that the mode you picked is the m
 ## The test
 
 ```bash
-npm test                       # = node dev/boot-sim.mjs
+npm test                       # = node dev/boot-sim.mjs && node --test dev/
 node dev/boot-sim.mjs --export out.json
+node --test dev/               # Client interaction rules (dev/client-logic.test.mjs)
 ```
 
 `dev/boot-sim.mjs` loads both halves under stubs (no DSH, no network, no browser) and asserts 197
