@@ -871,6 +871,25 @@ check(
   `modes: the Client default equals the Host's (${defaultMatch === null ? 'missing' : defaultMatch[1]} vs ${promptTable.DEFAULT_MODE})`,
 );
 
+// The Plugins page renders a bundle's configuration under its package name. A
+// renamed package would leave that form unreachable with no error, so the
+// Client's literal is checked against the manifest and the bundle's patch row.
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const bundlePatch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+const packageMatch = /const PACKAGE = '([^']+)'/.exec(clientSource);
+check(
+  packageMatch !== null && packageMatch[1] === manifest.name,
+  `plugin page: the Client names the bundle (${packageMatch === null ? 'missing' : packageMatch[1]} vs ${manifest.name})`,
+);
+check(
+  bundlePatch.includes(`name: '${manifest.name}'`),
+  'plugin page: the bundle patch inserts this package by the same name',
+);
+check(
+  clientSource.includes("name: 'plugins.bundle.config'") && clientSource.includes('key: PACKAGE'),
+  'plugin page: the configuration entry is keyed by the package name',
+);
+
 if (exportPath !== undefined) {
   try {
     await writeFile(exportPath, JSON.stringify(dump, null, 2), 'utf8');

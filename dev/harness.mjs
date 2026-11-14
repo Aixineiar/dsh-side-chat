@@ -66,8 +66,12 @@ export async function bootClient(options = {}) {
     tabs: [],
     /** `sidebarRight.registerCloseHandler()` records, by tab kind. */
     closeHandlers: new Map(),
-    /** `slots.register()` records, by slot name. */
+    /** The newest `slots.register()` record per slot name. */
     slots: new Map(),
+    /** Every `slots.register()` record in call order, disposed ones included. */
+    slotLog: [],
+    /** The page-document storage the plugin wrote, as a Map. */
+    localStorage: new Map(),
     /** `webServer`-free: the Client half only calls the route. */
     route: [],
     /** Every `openResource` call. */
@@ -82,8 +86,16 @@ export async function bootClient(options = {}) {
   const route = typeof options.route === 'function' ? options.route : async () => ({ ok: true, value: {} });
   const primitives =
     options.primitives === undefined
-      ? { Menu: () => null, Button: 'button', IconChevronDownOutlineRegular: () => null }
+      ? {
+          Menu: () => null,
+          Button: 'button',
+          IconChevronDownOutlineRegular: () => null,
+          Switch: 'Switch',
+          SegmentedControl: 'SegmentedControl',
+        }
       : options.primitives;
+  const local = new Map(Object.entries(options.localStorage ?? {}));
+  captured.localStorage = local;
   const catalog = typeof options.catalog === 'function' ? options.catalog : () => ({ ids: [], byId: {} });
   const retain =
     typeof options.retain === 'function' ? options.retain : () => ({ release: () => undefined });
@@ -95,7 +107,15 @@ export async function bootClient(options = {}) {
       },
     },
     sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
-    localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+    localStorage: {
+      getItem: (key) => (local.has(key) ? local.get(key) : null),
+      setItem: (key, value) => {
+        local.set(key, String(value));
+      },
+      removeItem: (key) => {
+        local.delete(key);
+      },
+    },
     innerWidth: 1280,
     innerHeight: 800,
     addEventListener: () => undefined,
@@ -128,8 +148,13 @@ export async function bootClient(options = {}) {
   const slots = {
     inject: (_name, cb) => cb(),
     register: (definition, component) => {
-      captured.slots.set(definition.name, { definition: definition, component: component });
-      return () => undefined;
+      const record = { definition: definition, component: component, disposed: false };
+      captured.slotLog.push(record);
+      captured.slots.set(definition.name, record);
+      return () => {
+        record.disposed = true;
+        if (captured.slots.get(definition.name) === record) captured.slots.delete(definition.name);
+      };
     },
   };
   const baseCtx = {

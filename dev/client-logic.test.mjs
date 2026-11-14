@@ -237,6 +237,12 @@ test('kit: a half-changed shared kit falls back to the local menu', async () => 
       IconChevronDownOutlineRegular: function Icon() {
         return null;
       },
+      Switch: function Switch() {
+        return null;
+      },
+      SegmentedControl: function Segmented() {
+        return null;
+      },
     },
   });
   const validMenu = findElement(renderGuide(valid, guideProps()), (element) => element.props?.anchor !== undefined);
@@ -252,6 +258,12 @@ test('kit: a half-changed shared kit falls back to the local menu', async () => 
       IconChevronDownOutlineRegular: function Icon() {
         return null;
       },
+      Switch: function Switch() {
+        return null;
+      },
+      SegmentedControl: function Segmented() {
+        return null;
+      },
     },
   });
   const partialMenu = findElement(renderGuide(partial, guideProps()), (element) => element.props?.anchor !== undefined);
@@ -265,6 +277,12 @@ test('kit: a half-changed shared kit falls back to the local menu', async () => 
       },
       Button: { $$typeof: Symbol.for('react.forward_ref'), render: () => null },
       IconChevronDownOutlineRegular: function Icon() {
+        return null;
+      },
+      Switch: function Switch() {
+        return null;
+      },
+      SegmentedControl: function Segmented() {
         return null;
       },
     },
@@ -307,4 +325,149 @@ test('bridge: the Session-command patch is removed when the plugin unloads', asy
 
   for (const disposer of boot.disposers) if (typeof disposer === 'function') disposer();
   assert.equal(remote.session.prompt, originalPrompt, 'unloading restores the original method');
+});
+
+test('settings: the form is keyed by the package name, and the header follows it', async () => {
+  const boot = await bootClient();
+  const header = boot.captured.slots.get('conversation.session.header.utilities');
+  assert.ok(header !== undefined, 'the header button is registered by default');
+  assert.equal(header.definition.order, 1000, 'the header entry sorts high inside its list');
+  assert.equal(header.definition.id, 'side-chat', 'the cell id is stable');
+
+  const page = boot.captured.slots.get('plugins.bundle.config');
+  assert.ok(page !== undefined, 'the bundle registers configuration on its own Plugins page');
+  assert.equal(page.definition.key, '@aixineiar/dsh-side-chat', 'the key is the package name');
+  assert.equal(page.component({ view: 'summary' }), 'settings.summary', 'the row summary names both settings');
+
+  // The default kit stub is incomplete on purpose, so this walks the plain
+  // controls the page keeps for a kit that does not ship `Switch`.
+  const toggle = findElement(
+    page.component({ view: 'page' }),
+    (element) => element.type === 'input' && element.props?.checked !== undefined,
+  );
+  assert.ok(toggle !== undefined, 'the row page renders the header-button control');
+  assert.equal(toggle.props.checked, true, 'the control ships on');
+  toggle.props.onChange({ target: { checked: false } });
+  assert.equal(
+    boot.captured.slots.get('conversation.session.header.utilities'),
+    undefined,
+    'switching it off disposes the header entry without a reload',
+  );
+  assert.equal(JSON.parse(boot.captured.localStorage.get('dsh.side-chat.settings')).headerButton, false);
+
+  const back = findElement(
+    page.component({ view: 'page' }),
+    (element) => element.type === 'input' && element.props?.checked !== undefined,
+  );
+  assert.equal(back.props.checked, false, 'the control reads back what was saved');
+  back.props.onChange({ target: { checked: true } });
+  assert.ok(
+    boot.captured.slots.get('conversation.session.header.utilities') !== undefined,
+    'switching it back on registers the entry again',
+  );
+});
+
+test('settings: the configured default mode is what a new side chat asks for', async () => {
+  const calls = [];
+  const boot = await bootClient({
+    // A complete kit, so the page renders the shared controls rather than the fallbacks.
+    primitives: {
+      Menu: function Menu() {
+        return null;
+      },
+      Button: function Button() {
+        return null;
+      },
+      IconChevronDownOutlineRegular: function Icon() {
+        return null;
+      },
+      Switch: function Switch() {
+        return null;
+      },
+      SegmentedControl: function Segmented() {
+        return null;
+      },
+    },
+    route: async (action, payload) => {
+      calls.push({ action: action, payload: payload });
+      if (action === 'open') return { ok: true, value: { childId: 'session-child', atSeq: 7, mode: payload.mode, label: 'Main' } };
+      return { ok: true, value: {} };
+    },
+  });
+  const page = boot.captured.slots.get('plugins.bundle.config');
+  const form = page.component({ view: 'page' });
+  const headerSwitch = findElement(form, (element) => element.props?.checked !== undefined);
+  assert.ok(headerSwitch !== undefined, 'the shared switch is used when the kit is complete');
+  assert.equal(typeof headerSwitch.type, 'function', 'the shared kit component is rendered, not the fallback');
+
+  const control = findElement(form, (element) => element.props?.options !== undefined && typeof element.props.onChange === 'function');
+  assert.ok(control !== undefined, 'the shared segmented control is used');
+  assert.deepEqual(
+    control.props.options.map((option) => option.value),
+    ['reply', 'read', 'full', 'last'],
+    'every mode is offered, plus following the last manual pick',
+  );
+  assert.match(String(control.props.options[3].label), /settings\.defaultMode\.last/);
+
+  control.props.onChange('full');
+  clickGuide(boot, guideProps());
+  await settle(20);
+  const open = calls.find((call) => call.action === 'open');
+  assert.ok(open !== undefined, 'the card still opens a thread');
+  assert.equal(open.payload.mode, 'full', 'the configured mode is passed to the Host');
+});
+
+test('settings: a stored document drives the page, and garbage falls back', async () => {
+  const calls = [];
+  const stored = await bootClient({
+    localStorage: { 'dsh.side-chat.settings': JSON.stringify({ headerButton: false, defaultMode: 'reply' }) },
+    route: async (action, payload) => {
+      calls.push({ action: action, payload: payload });
+      if (action === 'open') return { ok: true, value: { childId: 'session-child', atSeq: 7, mode: payload.mode, label: 'Main' } };
+      return { ok: true, value: {} };
+    },
+  });
+  assert.equal(
+    stored.captured.slots.get('conversation.session.header.utilities'),
+    undefined,
+    'a stored "off" keeps the header clean at boot',
+  );
+  clickGuide(stored, guideProps());
+  await settle(20);
+  assert.equal(calls.find((call) => call.action === 'open').payload.mode, 'reply', 'the stored mode is used');
+
+  const broken = await bootClient({ localStorage: { 'dsh.side-chat.settings': '{not json' } });
+  assert.ok(
+    broken.captured.slots.get('conversation.session.header.utilities') !== undefined,
+    'an unreadable document falls back to the defaults',
+  );
+});
+
+test('status: the snapshot line names the mode the Host answered with', async () => {
+  const boot = await bootClient();
+  const chat = boot.captured.slotLog.find(
+    (record) => record.definition.name === 'sidebar.right.pane.tab' && record.definition.key === '@aixineiar/dsh-side-chat/chat',
+  );
+  assert.ok(chat !== undefined, 'the conversation tab body is registered');
+  const render = (address) => {
+    const props = {
+      useTabInfo: () => ({ tab: { contentId: address } }),
+      useSessions: (select) => select({ byId: {} }),
+      useResource: () => ({ status: 'loading' }),
+    };
+    const outer = chat.component(props);
+    const body = Array.isArray(outer.children) ? outer.children[0] : outer.children;
+    const tree = body.type(body.props);
+    const status = findElement(tree, (element) => element.props?.parsed !== undefined);
+    assert.ok(status !== undefined, 'the status bar is rendered');
+    const line = status.type(status.props);
+    const label = findElement(line, (element) => element.props?.className === 'dsh-side-chat-status-label');
+    assert.ok(label !== undefined, 'the status bar has a snapshot line');
+    return String(label.children);
+  };
+  const withMode = render(ADDRESS);
+  assert.match(withMode, /status\.snapshotMode/, 'a recorded mode prefixes the snapshot line');
+  assert.match(withMode, /mode\.read/, 'the prefix names the mode');
+  const withoutMode = render('dsh-resource://sidechat/session/session-child?parent=session-main&at=7&t=1000');
+  assert.match(withoutMode, /status\.snapshot\(/, 'an address without a mode omits the prefix instead of guessing');
 });

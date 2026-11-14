@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
      * The shared-kit exports this plugin renders with.
      * @type {ReadonlyArray<string>}
      */
-    const PRIMITIVE_EXPORTS = ['Menu', 'Button', 'IconChevronDownOutlineRegular'];
+    const PRIMITIVE_EXPORTS = ['Menu', 'Button', 'IconChevronDownOutlineRegular', 'Switch', 'SegmentedControl'];
 
     /**
      * Whether one kit export can be rendered as a component type: a function
@@ -83,6 +83,21 @@ window.__ModuleLoader__.load({
     const SOURCE = 'sideChat';
     /** Page-document key holding the remembered mode. */
     const MODE_KEY = 'dsh.side-chat.mode';
+    /** Page-document key holding this plugin's page settings. */
+    const SETTINGS_KEY = 'dsh.side-chat.settings';
+    /**
+     * Page settings before the first save: the header button ships on, and a new
+     * side chat starts in the mode the user last picked by hand.
+     * @type {{ headerButton: boolean, defaultMode: string }}
+     */
+    const DEFAULT_SETTINGS = Object.freeze({ headerButton: true, defaultMode: 'last' });
+    /** Modes a new side chat may start in, plus "follow the last manual pick". */
+    const MODE_CHOICES = Object.freeze(['reply', 'read', 'full', 'last']);
+    /**
+     * The package this bundle ships as. The Plugins page keys a bundle's
+     * configuration entry by the package name.
+     */
+    const PACKAGE = '@aixineiar/dsh-side-chat';
     /**
      * The three supported modes, in menu order. The Host half reads the same set
      * from `prompt.js`; this copy exists because the Client loader cannot import
@@ -111,9 +126,10 @@ window.__ModuleLoader__.load({
       'mode.full': '完全继承',
       'mode.switchHint': '切换模式会新开一条侧边对话，并关闭当前这条',
       'button.label': '侧边对话',
-      'button.tooltip': '在右侧栏打开侧边对话（继承本会话上下文，默认只读）',
+      'button.tooltip': '在右侧栏打开侧边对话（继承本会话上下文）',
       'launcher.opening': '正在打开侧边对话…',
       'status.snapshot': '上下文截至 {time}',
+      'status.snapshotMode': '{mode} · 上下文截至 {time}',
       'status.running': '主会话仍在运行',
       'status.sync': '以最新快照新开',
       'status.syncHint': '用主会话的最新快照新开一条，并关闭当前侧边对话',
@@ -122,6 +138,13 @@ window.__ModuleLoader__.load({
       'status.empty': '主会话还没有可继承的内容',
       'status.failed': '同步失败',
       'action.retry': '重试',
+      'settings.summary': '右上角快捷按钮 · 新会话默认模式',
+      'settings.headerButton.title': '显示右上角快捷按钮',
+      'settings.headerButton.description': '在会话头部显示侧边对话按钮（位于「⋯」左侧）。关闭后仍可从右侧栏的侧边对话卡片打开。',
+      'settings.defaultMode.title': '新会话的默认模式',
+      'settings.defaultMode.description': '新建侧边对话时预先选中的模式；选「跟随上次手动选择」则沿用你上次在卡片里挑的模式。',
+      'settings.defaultMode.last': '跟随上次手动选择',
+      'settings.saved': '已保存',
       'error.failed': '侧边对话打开失败',
       'error.pending': '侧边会话尚未同步，请重试',
       'error.badRequest': '请求参数有误，无法继续',
@@ -153,9 +176,10 @@ window.__ModuleLoader__.load({
       'mode.full': 'Fully inherited',
       'mode.switchHint': 'Switching the mode opens a new side chat and closes this one',
       'button.label': 'Side chat',
-      'button.tooltip': 'Open a side chat in the right sidebar (inherits this conversation, read-only)',
+      'button.tooltip': 'Open a side chat in the right sidebar (inherits this conversation)',
       'launcher.opening': 'Opening the side chat…',
       'status.snapshot': 'Context as of {time}',
+      'status.snapshotMode': '{mode} · context as of {time}',
       'status.running': 'Main conversation running',
       'status.sync': 'Open a fresh snapshot',
       'status.syncHint': 'Opens a new side chat from the latest snapshot and closes this one',
@@ -164,6 +188,13 @@ window.__ModuleLoader__.load({
       'status.empty': 'The main conversation has nothing to inherit yet',
       'status.failed': 'Sync failed',
       'action.retry': 'Retry',
+      'settings.summary': 'Header button · default mode of a new chat',
+      'settings.headerButton.title': 'Show the header button',
+      'settings.headerButton.description': 'Shows the side-chat button in the conversation header, left of the more-actions menu. Switching it off keeps the sidebar card working.',
+      'settings.defaultMode.title': 'Default mode of a new chat',
+      'settings.defaultMode.description': 'Preselected when a side chat is created. "Follow the last manual pick" reuses the mode you chose in the card last time.',
+      'settings.defaultMode.last': 'Follow the last manual pick',
+      'settings.saved': 'Saved',
       'error.failed': 'Could not open the side chat',
       'error.pending': 'The side chat is not synced yet — please retry',
       'error.badRequest': 'The request was rejected as malformed',
@@ -234,6 +265,14 @@ window.__ModuleLoader__.load({
       '.dsh-side-chat-menu-check { width: 14px; height: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center; }',
       '.dsh-side-chat-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }',
       '.dsh-side-chat-menu-hint { font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-tertiary); }',
+      /* --- Plugins page configuration --- */
+      '.dsh-side-chat-settings { display: flex; flex-direction: column; gap: 18px; padding: 2px 0 10px; }',
+      '.dsh-side-chat-setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }',
+      '.dsh-side-chat-setting-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 560px; }',
+      '.dsh-side-chat-setting-title { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }',
+      '.dsh-side-chat-setting-desc { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
+      '.dsh-side-chat-setting-control { flex: none; display: flex; align-items: center; padding-top: 2px; }',
+      '.dsh-side-chat-settings-status { color: var(--dsw-alias-state-success-primary); font-size: 11px; line-height: 16px; }',
     ].join('\n');
 
     /** Read one page-document value without throwing in restricted contexts. */
@@ -264,8 +303,78 @@ window.__ModuleLoader__.load({
       return MODES.indexOf(value) >= 0 ? value : 'read';
     }
 
-    /** The mode remembered from the last choice. */
+    /** Cached page settings; null until the first read. */
+    let settingsCache = null;
+    /** Page-settings subscribers, one per mounted surface. */
+    const settingsListeners = new Set();
+
+    /**
+     * Accept one settings value, dropping anything the page cannot act on, so a
+     * hand-edited or half-written entry never disables a surface silently.
+     * @param value - parsed page settings, or anything that was stored there.
+     * @returns the effective settings.
+     */
+    function normalizeSettings(value) {
+      const source = value !== null && typeof value === 'object' ? value : {};
+      return {
+        headerButton: source.headerButton !== false,
+        defaultMode: MODE_CHOICES.indexOf(source.defaultMode) >= 0 ? source.defaultMode : DEFAULT_SETTINGS.defaultMode,
+      };
+    }
+
+    /** Current page settings; read once per page lifetime, then from the cache. */
+    function settingsSnapshot() {
+      if (settingsCache !== null) return settingsCache;
+      let parsed = null;
+      try {
+        parsed = JSON.parse(readStorage('localStorage', SETTINGS_KEY) ?? 'null');
+      } catch (error) {
+        parsed = null;
+      }
+      settingsCache = normalizeSettings(parsed);
+      return settingsCache;
+    }
+
+    /**
+     * Follow page-settings changes.
+     * @param listener - called after every write.
+     * @returns the unsubscribe function.
+     */
+    function subscribeSettings(listener) {
+      settingsListeners.add(listener);
+      return () => {
+        settingsListeners.delete(listener);
+      };
+    }
+
+    /**
+     * Merge one settings patch, persist it, and wake every surface bound to it.
+     * @param patch - the fields to change.
+     * @returns the settings now in effect.
+     */
+    function writeSettings(patch) {
+      const next = normalizeSettings({ ...settingsSnapshot(), ...patch });
+      settingsCache = next;
+      writeStorage('localStorage', SETTINGS_KEY, JSON.stringify(next));
+      for (const listener of [...settingsListeners]) {
+        try {
+          listener();
+        } catch (error) {
+          console.warn('side-chat: settings listener failed', error);
+        }
+      }
+      return next;
+    }
+
+    /**
+     * The mode a new side chat starts in: the configured mode, or — when the
+     * page is set to follow the last manual pick — the one remembered from the
+     * card's menu.
+     * @returns `reply`, `read`, or `full`.
+     */
     function storedMode() {
+      const choice = settingsSnapshot().defaultMode;
+      if (choice !== 'last') return normalizeMode(choice);
       return normalizeMode(readStorage('localStorage', MODE_KEY));
     }
 
@@ -1072,6 +1181,13 @@ window.__ModuleLoader__.load({
         const failure = failureState[0];
         const setFailure = failureState[1];
         const when = parsed.at === undefined ? '' : new Date(parsed.at).toLocaleString();
+        // The mode is recorded in the address the Host answered with, so an old
+        // tab restored without one simply omits the prefix instead of guessing.
+        const modeLabel = parsed.mode === undefined ? '' : t('mode.' + parsed.mode);
+        const snapshotText =
+          modeLabel === ''
+            ? t('status.snapshot', { time: when })
+            : t('status.snapshotMode', { mode: modeLabel, time: when });
         const sync = () => {
           if (phase === 'busy') return;
           setPhase('busy');
@@ -1117,7 +1233,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { className: 'dsh-side-chat-status' },
-          h('span', { className: 'dsh-side-chat-status-label' }, t('status.snapshot', { time: when })),
+          h('span', { className: 'dsh-side-chat-status-label' }, snapshotText),
           running ? h('span', {}, '· ' + t('status.running')) : null,
           h('span', { className: 'dsh-side-chat-status-spacer' }),
           phase === 'latest' ? h('span', {}, t('status.latest')) : null,
@@ -1634,16 +1750,178 @@ window.__ModuleLoader__.load({
         return h(SideChatGuideBoundary, null, h(SideChatGuide, props));
       }
 
+      /** Stable field id of the default-mode control on the row's configuration page. */
+      const MODE_FIELD_ID = 'dsh-side-chat-default-mode';
 
-      ctx.slots.inject('conversation.session.header.utilities', () =>
+      /**
+       * The label of one mode choice, including the "follow the last manual pick"
+       * entry that only the settings page offers.
+       * @param id - one entry of {@link MODE_CHOICES}.
+       * @returns the localized label.
+       */
+      function modeChoiceLabel(id) {
+        return id === 'last' ? t('settings.defaultMode.last') : t('mode.' + id);
+      }
+
+      /**
+       * This bundle's configuration on its own page in the Plugins page: the
+       * header-button switch and the mode a new side chat starts in. Both are
+       * page settings — they belong to this browser, need no Host round trip, and
+       * take effect immediately: the header button is registered and
+       * unregistered from the same change.
+       *
+       * The kit is used when it is complete; the plain controls below keep the
+       * page usable if a build ever ships a kit without `Switch` or
+       * `SegmentedControl`.
+       * @param props - the page's view: `page` renders the form, `summary` the
+       *   one-line description the page falls back to when a package has none.
+       * @returns the bundle's configuration, or its summary line.
+       */
+      function SideChatSettings(props) {
+        const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsSnapshot);
+        const kit = primitivesModule() ?? null;
+        const savedState = useState(false);
+        const saved = savedState[0];
+        const setSaved = savedState[1];
+        const timerRef = useRef(0);
+        useEffect(
+          () => () => {
+            if (timerRef.current !== 0) window.clearTimeout(timerRef.current);
+          },
+          [],
+        );
+        const save = (patch) => {
+          writeSettings(patch);
+          setSaved(true);
+          if (timerRef.current !== 0) window.clearTimeout(timerRef.current);
+          timerRef.current = window.setTimeout(() => {
+            timerRef.current = 0;
+            setSaved(false);
+          }, 2000);
+        };
+        if (props.view === 'summary') return t('settings.summary');
+        const Switch = kit === null ? null : kit.Switch;
+        const Segmented = kit === null ? null : kit.SegmentedControl;
+        const row = (titleKey, descriptionKey, control) =>
+          h(
+            'div',
+            { className: 'dsh-side-chat-setting' },
+            h(
+              'div',
+              { className: 'dsh-side-chat-setting-text' },
+              h('div', { className: 'dsh-side-chat-setting-title' }, t(titleKey)),
+              h('p', { className: 'dsh-side-chat-setting-desc' }, t(descriptionKey)),
+            ),
+            h('div', { className: 'dsh-side-chat-setting-control' }, control),
+          );
+        return h(
+          'div',
+          { className: 'dsh-side-chat-settings' },
+          row(
+            'settings.headerButton.title',
+            'settings.headerButton.description',
+            Switch !== null
+              ? h(Switch, {
+                  checked: settings.headerButton,
+                  label: t('settings.headerButton.title'),
+                  onChange: (next) => {
+                    save({ headerButton: next === true });
+                  },
+                })
+              : h('input', {
+                  type: 'checkbox',
+                  checked: settings.headerButton,
+                  'aria-label': t('settings.headerButton.title'),
+                  onChange: (event) => {
+                    save({ headerButton: event.target.checked === true });
+                  },
+                }),
+          ),
+          row(
+            'settings.defaultMode.title',
+            'settings.defaultMode.description',
+            Segmented !== null
+              ? h(Segmented, {
+                  id: MODE_FIELD_ID,
+                  label: t('settings.defaultMode.title'),
+                  value: settings.defaultMode,
+                  options: MODE_CHOICES.map((id) => ({ value: id, label: modeChoiceLabel(id) })),
+                  onChange: (next) => {
+                    save({ defaultMode: next });
+                  },
+                })
+              : h(
+                  'select',
+                  {
+                    id: MODE_FIELD_ID,
+                    value: settings.defaultMode,
+                    'aria-label': t('settings.defaultMode.title'),
+                    onChange: (event) => {
+                      save({ defaultMode: event.target.value });
+                    },
+                  },
+                  MODE_CHOICES.map((id) => h('option', { key: id, value: id }, modeChoiceLabel(id))),
+                ),
+          ),
+          saved ? h('p', { className: 'dsh-side-chat-settings-status', role: 'status' }, t('settings.saved')) : null,
+        );
+      }
+
+      /**
+       * The conversation header's utility group. `order` only sorts entries of
+       * this list: the conversation header appends the host's own more-actions
+       * control after the whole list, so no order value can place this entry to
+       * its right. The value is kept high anyway, so a shipped utility added
+       * later within its usual range still sorts to the left.
+       *
+       * The entry follows the page setting: switching the button off disposes the
+       * registration and switching it back on registers it again, both without a
+       * reload. A missing list keeps `ctx.slots.inject` pending, so nothing here
+       * has to handle that case.
+       */
+      ctx.slots.inject('conversation.session.header.utilities', () => {
+        let dispose;
+        const sync = () => {
+          const wanted = settingsSnapshot().headerButton;
+          if (wanted && dispose === undefined) {
+            dispose = ctx.slots.register(
+              {
+                name: 'conversation.session.header.utilities',
+                // A stable id keeps this entry in one cell: a changed id would
+                // move it rather than configure it.
+                id: 'side-chat',
+                order: 1000,
+                locale: NS,
+              },
+              SideChatButton,
+            );
+          } else if (!wanted && dispose !== undefined) {
+            dispose();
+            dispose = undefined;
+          }
+        };
+        const off = subscribeSettings(sync);
+        sync();
+        return () => {
+          off();
+          if (dispose !== undefined) {
+            dispose();
+            dispose = undefined;
+          }
+        };
+      });
+
+      // This bundle's configuration on its own page in the Plugins page: the page
+      // keys a bundle's form by the package name and renders it between the
+      // description and the component rows.
+      ctx.slots.inject('plugins.bundle.config', () =>
         ctx.slots.register(
           {
-            name: 'conversation.session.header.utilities',
-            id: 'side-chat',
-            order: 90,
+            name: 'plugins.bundle.config',
+            key: PACKAGE,
             locale: NS,
           },
-          SideChatButton,
+          SideChatSettings,
         ),
       );
 
